@@ -5,3 +5,5 @@ chromadb
 google-genai
 openpyxl
 requests
+psycopg2-binary
+asyncpg
