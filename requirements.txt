@@ -4,4 +4,4 @@ aiosqlite
 chromadb
 google-genai
 openpyxl
-gdown
+requests

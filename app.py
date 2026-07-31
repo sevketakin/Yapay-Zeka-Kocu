@@ -57,19 +57,14 @@ UYGULAMA_ADI = "Koçum"
 # ============== VERİTABANI ZIP'İNİ OTOMATİK İNDİRME + BİRLEŞTİRME + AÇMA ==============
 # Öncelik sırası:
 # 1) '/data/veritabani' zaten varsa hiçbir şey yapma
-# 2) Yoksa, Google Drive'dan indir (GOOGLE_DRIVE_DOSYA_ID tanımlıysa)
-# 3) Ya da yerelde yüklenmiş parçaları (veritabani.zip.001, ...) birleştir
-# 4) Ya da tek parça veritabani.zip'i aç
-GOOGLE_DRIVE_DOSYA_ID = "1NjzlweOvH9-GF4HxqR0viHWc8SaaqTDi"
-
-# ============== VERİTABANI ZIP'İNİ OTOMATİK İNDİRME + BİRLEŞTİRME + AÇMA ==============
-# Öncelik sırası:
-# 1) '/data/veritabani' zaten varsa hiçbir şey yapma
 # 2) Yoksa, önce mevcut zip'in SAĞLAM olup olmadığını kontrol et — bozuksa sil
-# 3) Google Drive'dan indir (GOOGLE_DRIVE_DOSYA_ID tanımlıysa)
+# 3) GitHub Release'ten indir (GITHUB_ZIP_URL tanımlıysa)
 # 4) Ya da yerelde yüklenmiş parçaları (veritabani.zip.001, ...) birleştir
 # 5) Zip'i aç, açma da bozuksa tekrar sil ve baştan indir (bir kere daha dene)
-GOOGLE_DRIVE_DOSYA_ID = "1NjzlweOvH9-GF4HxqR0viHWc8SaaqTDi"
+GITHUB_ZIP_URL = (
+    "https://github.com/sevketakin/Yapay-Zeka-Kocu/releases/download/"
+    "untagged-e764af5a2a8890bea3d9/veritabani.zip"
+)
 
 
 def _zip_saglam_mi(yol):
@@ -82,6 +77,7 @@ def _zip_saglam_mi(yol):
 
 def _veritabanini_hazirla():
     import glob as _glob
+    import requests
 
     _tek_zip = os.path.join(VERI_KLASORU, "veritabani.zip")
     _birlesik_zip = os.path.join(VERI_KLASORU, "_veritabani_birlesik.zip")
@@ -92,14 +88,22 @@ def _veritabanini_hazirla():
             print(f"'{_yol}' bozuk görünüyor, siliniyor...")
             os.remove(_yol)
 
-    if GOOGLE_DRIVE_DOSYA_ID and not os.path.exists(_tek_zip):
+    if GITHUB_ZIP_URL and not os.path.exists(_tek_zip):
         try:
-            import gdown
-            print("Veritabanı Google Drive'dan indiriliyor... (bu birkaç dakika sürebilir)")
-            gdown.download(id=GOOGLE_DRIVE_DOSYA_ID, output=_tek_zip, quiet=False)
+            print("Veritabanı GitHub Release'ten indiriliyor... (bu birkaç dakika sürebilir)")
+            with requests.get(GITHUB_ZIP_URL, stream=True, allow_redirects=True, timeout=120) as yanit:
+                yanit.raise_for_status()
+                toplam = int(yanit.headers.get("content-length", 0))
+                indirilen = 0
+                with open(_tek_zip, "wb") as f:
+                    for parca in yanit.iter_content(chunk_size=8 * 1024 * 1024):
+                        f.write(parca)
+                        indirilen += len(parca)
+                        if toplam:
+                            print(f"  {indirilen / (1024*1024):.0f}MB / {toplam / (1024*1024):.0f}MB")
             print("İndirme tamamlandı.")
         except Exception as e:
-            print(f"Google Drive'dan indirme başarısız: {e}")
+            print(f"GitHub'dan indirme başarısız: {e}")
 
     if not os.path.exists(_tek_zip) or not _zip_saglam_mi(_tek_zip):
         _parcalar = sorted(_glob.glob(os.path.join(VERI_KLASORU, "veritabani.zip.*")))
