@@ -1,0 +1,10 @@
+veritabani/
+sohbetler/
+kanal_tum_videolar/
+koc_data.db
+.env
+.files/
+__pycache__/
+*.pyc
+.chainlit/
+*.zip

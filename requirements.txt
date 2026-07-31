@@ -1,0 +1,6 @@
+chainlit
+sqlalchemy
+aiosqlite
+chromadb
+google-genai
+openpyxl
