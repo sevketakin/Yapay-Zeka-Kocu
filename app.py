@@ -686,6 +686,26 @@ async def basla():
     ).send()
 
 
+@cl.on_chat_resume
+async def sohbete_devam(thread):
+    """Sol menüden eski bir sohbete tıklandığında çalışır — hem mesaj
+    kutusunu aktif hale getirir hem de Koçum'un o konuşmanın bağlamını
+    (gecmis) hatırlamasını sağlar."""
+    istemcileri_al()
+    gecmis = []
+    for adim in thread.get("steps", []):
+        tur = adim.get("type", "")
+        if tur == "user_message":
+            metin = adim.get("output") or adim.get("input") or ""
+            if metin:
+                gecmis.append({"role": "user", "parts": [{"text": metin}]})
+        elif tur == "assistant_message":
+            metin = adim.get("output") or ""
+            if metin:
+                gecmis.append({"role": "model", "parts": [{"text": metin}]})
+    cl.user_session.set("gecmis", gecmis)
+
+
 def _sohbet_json_arsivle(koleksiyon, dosya_yolu, dosya_adi):
     """Eski Streamlit sohbet JSON dosyasını okuyup arşive (ChromaDB) ekler."""
     with open(dosya_yolu, 'r', encoding='utf-8') as f:
