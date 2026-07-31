@@ -495,17 +495,20 @@ def excel_plan_olustur(satirlar, baslik="Program"):
     return arabellek.getvalue()
 
 
-# ============== KİMLİK DOĞRULAMA (basit, tek kullanıcı - local kullanım) ==============
-@cl.password_auth_callback
-def auth_callback(username: str, password: str):
-    # Sadece kendi bilgisayarında/local kullanım için - herhangi bir
-    # kullanıcı adıyla giriş kabul edilir, gerçek bir güvenlik katmanı değil.
-    return cl.User(identifier=username or "ben")
-
-
-@cl.data_layer
-def get_data_layer():
-    return SQLAlchemyDataLayer(conninfo=f"sqlite+aiosqlite:///{SOHBET_DB_YOLU}")
+# ============== KİMLİK DOĞRULAMA / KALICI SOHBET GEÇMİŞİ ==============
+# NOT: Şimdilik devre dışı — SQLite tabloları otomatik oluşmadığı için
+# hataya yol açıyordu. Uygulama girişsiz, sorunsuz çalışsın diye kapattık.
+# Sohbet geçmişi, tarayıcı sekmesi açık kaldığı sürece hâlâ hatırlanıyor
+# (cl.user_session üzerinden) — sadece "farklı günlerde eski sohbete
+# dönme" özelliği şimdilik yok. İstersek ileride tekrar ekleriz.
+#
+# @cl.password_auth_callback
+# def auth_callback(username: str, password: str):
+#     return cl.User(identifier=username or "ben")
+#
+# @cl.data_layer
+# def get_data_layer():
+#     return SQLAlchemyDataLayer(conninfo=f"sqlite+aiosqlite:///{SOHBET_DB_YOLU}")
 
 
 # ============== CHAINLIT OLAYLARI ==============
