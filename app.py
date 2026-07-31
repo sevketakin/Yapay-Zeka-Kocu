@@ -520,8 +520,43 @@ async def basla():
         content=f"Merhaba! Ben **{UYGULAMA_ADI}**, senin kişisel hybrid antrenörünüm. "
                 f"Bugün nasıl yardımcı olabilirim?\n\n"
                 f"💡 İpucu: Bir fotoğraf ya da ses kaydı eklemek için mesaj kutusundaki "
-                f"ataç ikonunu kullanabilirsin."
+                f"ataç ikonunu kullanabilirsin. Eski sohbet dosyalarını (.json) da aynı "
+                f"şekilde ekleyip arşive dahil edebilirsin."
     ).send()
+
+
+def _sohbet_json_arsivle(koleksiyon, dosya_yolu, dosya_adi):
+    """Eski Streamlit sohbet JSON dosyasını okuyup arşive (ChromaDB) ekler."""
+    with open(dosya_yolu, 'r', encoding='utf-8') as f:
+        veri = json.load(f)
+
+    mesajlar = veri.get("mesajlar", [])
+    if not mesajlar:
+        return 0
+
+    baslik = veri.get("baslik", dosya_adi)
+    satirlar = [f"# Eski Sohbet: {baslik}\n"]
+    for m in mesajlar:
+        rol = "Kullanıcı" if m.get("role") == "user" else "Koçum"
+        icerik = m.get("content", "")
+        if icerik:
+            satirlar.append(f"{rol}: {icerik}")
+    metin = "\n\n".join(satirlar)
+
+    if len(metin.strip()) < 50:
+        return 0
+
+    boyut, ortusme = 800, 150
+    parcalar, baslangic = [], 0
+    while baslangic < len(metin):
+        parcalar.append(metin[baslangic:baslangic + boyut])
+        baslangic += (boyut - ortusme)
+
+    etiket = f"eski_sohbet_{uuid.uuid4().hex[:8]}"
+    ids = [f"{etiket}_parca_{j}" for j in range(len(parcalar))]
+    metadatalar = [{"video_id": f"Eski sohbet: {baslik}", "kaynak": "eski_sohbet"} for _ in parcalar]
+    koleksiyon.add(documents=parcalar, ids=ids, metadatas=metadatalar)
+    return len(parcalar)
 
 
 @cl.on_message
@@ -530,9 +565,11 @@ async def mesaj_geldi(message: cl.Message):
     soru = message.content or ""
 
     gorsel_b64, gorsel_mime = None, None
+    json_sonuclari = []
     for el in message.elements:
         mime = getattr(el, "mime", "") or ""
         yol = getattr(el, "path", None)
+        ad = getattr(el, "name", "") or ""
         if not yol:
             continue
         if mime.startswith("image"):
@@ -546,6 +583,23 @@ async def mesaj_geldi(message: cl.Message):
                 yazi = await cl.make_async(ses_yaziya_cevir)(client_gemini, ses_bytes, mime)
             if yazi:
                 soru = (soru + "\n" + yazi).strip() if soru else yazi
+        elif ad.endswith(".json") or mime == "application/json":
+            try:
+                sayi = await cl.make_async(_sohbet_json_arsivle)(koleksiyon, yol, ad)
+                json_sonuclari.append((ad, sayi))
+            except Exception as e:
+                json_sonuclari.append((ad, f"HATA: {e}"))
+
+    if json_sonuclari:
+        satirlar = ["📥 **Eski sohbet(ler) arşive eklendi:**"]
+        for ad, sonuc in json_sonuclari:
+            if isinstance(sonuc, int):
+                satirlar.append(f"- {ad}: {sonuc} parça eklendi" if sonuc else f"- {ad}: boş, atlandı")
+            else:
+                satirlar.append(f"- {ad}: {sonuc}")
+        await cl.Message(content="\n".join(satirlar)).send()
+        if not soru:
+            return
 
     if not soru:
         await cl.Message(content="Bir metin, fotoğraf ya da ses kaydı gönderir misin?").send()
