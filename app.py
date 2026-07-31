@@ -88,6 +88,14 @@ def _veritabanini_hazirla():
             print(f"'{_yol}' bozuk görünüyor, siliniyor...")
             os.remove(_yol)
 
+    # Eski/yarım kalmış parça dosyalarını da temizle (yer açmak için)
+    for _parca in _glob.glob(os.path.join(VERI_KLASORU, "veritabani.zip.*")):
+        if not os.path.exists(_tek_zip):  # tek zip zaten sağlamsa parçalara dokunma
+            try:
+                os.remove(_parca)
+            except Exception:
+                pass
+
     if GITHUB_ZIP_URL and not os.path.exists(_tek_zip):
         try:
             print("Veritabanı GitHub Release'ten indiriliyor... (bu birkaç dakika sürebilir)")
@@ -104,6 +112,12 @@ def _veritabanini_hazirla():
             print("İndirme tamamlandı.")
         except Exception as e:
             print(f"GitHub'dan indirme başarısız: {e}")
+            if os.path.exists(_tek_zip):
+                try:
+                    os.remove(_tek_zip)
+                    print("Yarım kalan dosya temizlendi.")
+                except Exception:
+                    pass
 
     if not os.path.exists(_tek_zip) or not _zip_saglam_mi(_tek_zip):
         _parcalar = sorted(_glob.glob(os.path.join(VERI_KLASORU, "veritabani.zip.*")))
@@ -126,6 +140,16 @@ def _veritabanini_hazirla():
     print(f"'{_acilacak_zip}' açılıyor... (bu biraz sürebilir)")
     with zipfile.ZipFile(_acilacak_zip, 'r') as z:
         z.extractall(VERI_KLASORU)
+
+    # Açma başarılıysa, yer açmak için zip'i (ve varsa parçaları) sil
+    try:
+        for _yol in [_tek_zip, _birlesik_zip]:
+            if os.path.exists(_yol):
+                os.remove(_yol)
+        for _parca in _glob.glob(os.path.join(VERI_KLASORU, "veritabani.zip.*")):
+            os.remove(_parca)
+    except Exception:
+        pass
     print("Veritabanı hazır.")
 
 
