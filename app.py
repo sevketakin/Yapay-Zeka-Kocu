@@ -63,7 +63,7 @@ UYGULAMA_ADI = "Koçum"
 # 5) Zip'i aç, açma da bozuksa tekrar sil ve baştan indir (bir kere daha dene)
 GITHUB_ZIP_URL = (
     "https://github.com/sevketakin/Yapay-Zeka-Kocu/releases/download/"
-    "untagged-e764af5a2a8890bea3d9/veritabani.zip"
+    "v1/veritabani.zip"
 )
 
 
