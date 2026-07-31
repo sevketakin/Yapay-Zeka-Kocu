@@ -1,0 +1,12 @@
+[project]
+enable_telemetry = false
+
+[UI]
+name = "Koçum"
+default_theme = "dark"
+show_readme_as_default = false
+custom_js = "/public/custom.js"
+
+[features]
+multi_modal = true
+audio = true

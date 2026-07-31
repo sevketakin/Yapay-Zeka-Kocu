@@ -6,5 +6,4 @@ koc_data.db
 .files/
 __pycache__/
 *.pyc
-.chainlit/
 *.zip
