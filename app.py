@@ -776,12 +776,12 @@ async def mesaj_geldi(message: cl.Message):
         cl.Action(name="excel_yap", payload={"metin": cevap}, label="📊 Excel Yap"),
     ]
 
-    elementler = []
+    nihai_metin = cevap
     if kaynaklar:
         kaynak_metni = "\n".join(f"- {k['link']}" for k in kaynaklar[:10])
-        elementler.append(cl.Text(name="Kullanılan kaynaklar", content=kaynak_metni, display="side"))
+        nihai_metin = f"{cevap}\n\n---\n**🔍 Kullanılan kaynaklar:**\n{kaynak_metni}"
 
-    await cl.Message(content=cevap, actions=actions, elements=elementler).send()
+    await cl.Message(content=nihai_metin, actions=actions).send()
 
 
 @cl.action_callback("takvim_yap")
