@@ -54,16 +54,35 @@ KAC_PARCA_GETIRILSIN = 15
 UYGULAMA_ADI = "Koçum"
 # =======================================
 
-# ============== VERİTABANI ZIP'İNİ OTOMATİK AÇMA ==============
-# Eğer '/data/veritabani' klasörü henüz yoksa ama '/data/veritabani.zip'
-# varsa (yani daha yeni yüklediysen), uygulama açılırken otomatik olarak
-# zip'i açar. Bu, sadece BİR KEZ (klasör oluşana kadar) çalışır.
-_veritabani_zip = os.path.join(VERI_KLASORU, "veritabani.zip")
-if not os.path.exists(DB_KLASORU) and os.path.exists(_veritabani_zip):
-    print(f"'{_veritabani_zip}' bulundu, açılıyor... (bu biraz sürebilir)")
-    with zipfile.ZipFile(_veritabani_zip, 'r') as z:
-        z.extractall(VERI_KLASORU)
-    print("Veritabanı hazır.")
+# ============== VERİTABANI ZIP'İNİ OTOMATİK BİRLEŞTİRME + AÇMA ==============
+# Büyük veritabanı, 7-Zip ile küçük parçalara bölünüp yüklendiği için
+# (veritabani.zip.001, .002, ... gibi), önce bu parçaları sırayla
+# birleştirip tek bir zip dosyası oluşturuyoruz, sonra onu açıyoruz.
+# Bu, sadece '/data/veritabani' klasörü henüz yoksa çalışır (bir kereliğine).
+if not os.path.exists(DB_KLASORU):
+    import glob as _glob
+
+    _parcalar = sorted(_glob.glob(os.path.join(VERI_KLASORU, "veritabani.zip.*")))
+    _birlesik_zip = os.path.join(VERI_KLASORU, "_veritabani_birlesik.zip")
+    _tek_zip = os.path.join(VERI_KLASORU, "veritabani.zip")
+
+    if _parcalar and not os.path.exists(_birlesik_zip) and not os.path.exists(DB_KLASORU):
+        print(f"{len(_parcalar)} parça bulundu, birleştiriliyor...")
+        with open(_birlesik_zip, "wb") as cikti:
+            for parca in _parcalar:
+                with open(parca, "rb") as p:
+                    cikti.write(p.read())
+        print("Parçalar birleştirildi.")
+
+    _acilacak_zip = _birlesik_zip if os.path.exists(_birlesik_zip) else (
+        _tek_zip if os.path.exists(_tek_zip) else None
+    )
+
+    if _acilacak_zip:
+        print(f"'{_acilacak_zip}' açılıyor... (bu biraz sürebilir)")
+        with zipfile.ZipFile(_acilacak_zip, 'r') as z:
+            z.extractall(VERI_KLASORU)
+        print("Veritabanı hazır.")
 
 AYLAR_TR = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
             "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
