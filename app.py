@@ -740,6 +740,62 @@ def _sohbet_json_arsivle(koleksiyon, dosya_yolu, dosya_adi):
     return len(parcalar)
 
 
+async def _eski_sohbeti_gercek_thread_yap(dosya_yolu, dosya_adi, kullanici_identifier):
+    """Eski sohbet JSON'unu, Postgres'te GERÇEK bir thread + steps olarak
+    oluşturur. Böylece sol menüde tıklanabilir, devam edilebilir bir
+    sohbet olarak görünür (sadece arka plan bilgisi değil)."""
+    if not DATABASE_URL or not kullanici_identifier:
+        return None
+
+    import asyncpg
+
+    with open(dosya_yolu, 'r', encoding='utf-8') as f:
+        veri = json.load(f)
+    mesajlar = veri.get("mesajlar", [])
+    if not mesajlar:
+        return None
+
+    baslik = veri.get("baslik", dosya_adi)
+
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        kullanici_satiri = await conn.fetchrow(
+            'SELECT id FROM users WHERE identifier = $1', kullanici_identifier
+        )
+        if not kullanici_satiri:
+            return None
+        kullanici_id = kullanici_satiri['id']
+
+        thread_id = str(uuid.uuid4())
+        simdi = datetime.utcnow().isoformat() + "Z"
+        await conn.execute(
+            'INSERT INTO threads (id, "createdAt", name, "userId", "userIdentifier", tags, metadata) '
+            'VALUES ($1, $2, $3, $4, $5, $6, $7)',
+            thread_id, simdi, f"📜 {baslik}", kullanici_id, kullanici_identifier, [], '{}'
+        )
+
+        for m in mesajlar:
+            icerik = m.get("content", "")
+            if not icerik:
+                continue
+            rol = m.get("role")
+            tur = "user_message" if rol == "user" else "assistant_message"
+            ad = kullanici_identifier if tur == "user_message" else UYGULAMA_ADI
+            zaman = datetime.utcnow().isoformat() + "Z"
+            adim_id = str(uuid.uuid4())
+            await conn.execute(
+                'INSERT INTO steps (id, name, type, "threadId", "parentId", streaming, input, '
+                '"isError", output, "createdAt", start, "end", "defaultOpen", "autoCollapse", '
+                '"showInput", metadata) '
+                'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)',
+                adim_id, ad, tur, thread_id, None, False, icerik, False, icerik,
+                zaman, zaman, zaman, False, False, "json", '{}'
+            )
+        return thread_id
+    finally:
+        await conn.close()
+
+
 def _pcm_wav_yap(pcm_bytes, ornek_hizi=24000, kanal=1, ornek_genisligi=2):
     """Chainlit'ten gelen ham (headersiz) PCM ses verisini, Gemini'nin
     anlayabileceği düzgün bir WAV dosyasına çevirir."""
@@ -821,6 +877,17 @@ async def mesaj_geldi(message: cl.Message):
                 json_sonuclari.append((ad, sayi))
             except Exception as e:
                 json_sonuclari.append((ad, f"HATA: {e}"))
+                continue
+
+            try:
+                kullanici = cl.user_session.get("user")
+                kullanici_id = kullanici.identifier if kullanici else None
+                thread_id = await _eski_sohbeti_gercek_thread_yap(yol, ad, kullanici_id)
+                if thread_id:
+                    json_sonuclari.append((ad, "🧵 Gerçek sohbet olarak da eklendi — sol menüde "
+                                                "göreceksin, tıklayıp devam edebilirsin"))
+            except Exception as e:
+                json_sonuclari.append((ad, f"(gerçek sohbet oluşturulamadı: {e})"))
 
     if json_sonuclari:
         satirlar = ["📥 **Eski sohbet(ler) arşive eklendi:**"]
