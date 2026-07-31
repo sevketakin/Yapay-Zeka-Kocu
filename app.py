@@ -257,10 +257,23 @@ def baglami_hazirla(bulunan_parcalar):
     kaynaklar = []
     for metin, meta in zip(metinler, metadatalar):
         video_id = meta.get('video_id', 'bilinmiyor')
-        link = f"https://youtube.com/watch?v={video_id}"
-        baglam_parcalari.append(f"[Kaynak video: {link}]\n{metin}")
+        kaynak_turu = meta.get('kaynak', '')
         onizleme = metin[:250].strip() + ("..." if len(metin) > 250 else "")
-        kaynaklar.append({"link": link, "onizleme": onizleme})
+
+        if kaynak_turu == "eski_sohbet":
+            # Bu GERÇEK bir kişisel konuşma geçmişi — genel bir video değil
+            baglam_parcalari.append(
+                f"[GERÇEK KİŞİSEL GEÇMİŞ — {video_id} — bu kullanıcının SENİNLE "
+                f"gerçekten daha önce konuştuğu bir şey, genel bir video örneği DEĞİL]\n{metin}"
+            )
+            kaynaklar.append({"link": None, "baslik": video_id, "onizleme": onizleme})
+        else:
+            link = f"https://youtube.com/watch?v={video_id}"
+            baglam_parcalari.append(
+                f"[Genel video içeriği (BAŞKA insanların/koçların anlattığı örnekler, "
+                f"kullanıcının kendi kişisel geçmişi DEĞİL): {link}]\n{metin}"
+            )
+            kaynaklar.append({"link": link, "baslik": None, "onizleme": onizleme})
     return "\n\n---\n\n".join(baglam_parcalari), kaynaklar
 
 
@@ -324,6 +337,23 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
         "olsun. Notlar arasında çelişki varsa ya da soru notlarla hiç "
         "alakalı değilse, o zaman kendi genel uzmanlığından tam ve "
         "kaliteli bir cevap ver.\n\n"
+        "🚨 KRİTİK GÜVENLİK KURALI — KULLANICININ KİŞİSEL GEÇMİŞİNİ ASLA "
+        "UYDURMA: Yukarıdaki 'kendinden emin konuş' talimatı SADECE genel "
+        "spor bilimi/antrenman bilgisi için geçerli — kullanıcının KENDİ "
+        "KİŞİSEL antrenman geçmişi, yaptığı spesifik idmanlar, kaldırdığı "
+        "ağırlıklar, 'geçen gün ne yaptık', 'dün ne konuşmuştuk' gibi "
+        "sorularda KESİNLİKLE FARKLI davran: Bu tür kişisel/geçmişe "
+        "dayalı iddiaları SADECE aşağıda sana verilen gerçek konuşma "
+        "geçmişinde (önceki mesajlarda) ya da 'Eski sohbet: ...' etiketli "
+        "notlarda GERÇEKTEN yazıyorsa kullan. Video transkriptlerindeki "
+        "genel örnekleri (başka insanların/koçların anlattığı antrenmanları) "
+        "ASLA kullanıcının KENDİ geçmişiymiş gibi sunma — bu, sayı, "
+        "ağırlık, tarih gibi somut kişisel detaylar UYDURMAK demektir ve "
+        "kesinlikle yasak, çok tehlikeli bir güven kaybına yol açar. "
+        "Kullanıcının geçmişte ne yaptığını GERÇEKTEN bilmiyorsan, bunu "
+        "olduğu gibi, dürüstçe ve doğal bir dille söyle (örn. 'bunu "
+        "bana daha önce anlatmamıştın, hatırlatır mısın?' gibi) — asla "
+        "sayı/ağırlık/tarih uydurup kesin bir hatıraymış gibi anlatma.\n\n"
         "TON: Benimle samimi, sıcak, motive edici ve gerçek bir antrenör "
         "gibi konuş — resmi/mesafeli bir asistan gibi değil. Beni "
         "tanıyan, hedeflerime yatırım yapmış biri gibi davran. Önceki "
@@ -778,7 +808,10 @@ async def mesaj_geldi(message: cl.Message):
 
     nihai_metin = cevap
     if kaynaklar:
-        kaynak_metni = "\n".join(f"- {k['link']}" for k in kaynaklar[:10])
+        kaynak_metni = "\n".join(
+            f"- {k['link']}" if k.get('link') else f"- 📜 {k.get('baslik', 'Eski sohbet')}"
+            for k in kaynaklar[:10]
+        )
         nihai_metin = f"{cevap}\n\n---\n**🔍 Kullanılan kaynaklar:**\n{kaynak_metni}"
 
     await cl.Message(content=nihai_metin, actions=actions).send()
