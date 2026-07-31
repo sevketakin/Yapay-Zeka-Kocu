@@ -62,10 +62,35 @@ UYGULAMA_ADI = "Koçum"
 # 4) Ya da tek parça veritabani.zip'i aç
 GOOGLE_DRIVE_DOSYA_ID = "1NjzlweOvH9-GF4HxqR0viHWc8SaaqTDi"
 
-if not os.path.exists(DB_KLASORU):
+# ============== VERİTABANI ZIP'İNİ OTOMATİK İNDİRME + BİRLEŞTİRME + AÇMA ==============
+# Öncelik sırası:
+# 1) '/data/veritabani' zaten varsa hiçbir şey yapma
+# 2) Yoksa, önce mevcut zip'in SAĞLAM olup olmadığını kontrol et — bozuksa sil
+# 3) Google Drive'dan indir (GOOGLE_DRIVE_DOSYA_ID tanımlıysa)
+# 4) Ya da yerelde yüklenmiş parçaları (veritabani.zip.001, ...) birleştir
+# 5) Zip'i aç, açma da bozuksa tekrar sil ve baştan indir (bir kere daha dene)
+GOOGLE_DRIVE_DOSYA_ID = "1NjzlweOvH9-GF4HxqR0viHWc8SaaqTDi"
+
+
+def _zip_saglam_mi(yol):
+    try:
+        with zipfile.ZipFile(yol, 'r') as z:
+            return z.testzip() is None
+    except Exception:
+        return False
+
+
+def _veritabanini_hazirla():
     import glob as _glob
 
     _tek_zip = os.path.join(VERI_KLASORU, "veritabani.zip")
+    _birlesik_zip = os.path.join(VERI_KLASORU, "_veritabani_birlesik.zip")
+
+    # Var olan ama BOZUK dosyaları temizle (önceki başarısız denemelerden kalmış olabilir)
+    for _yol in [_tek_zip, _birlesik_zip]:
+        if os.path.exists(_yol) and not _zip_saglam_mi(_yol):
+            print(f"'{_yol}' bozuk görünüyor, siliniyor...")
+            os.remove(_yol)
 
     if GOOGLE_DRIVE_DOSYA_ID and not os.path.exists(_tek_zip):
         try:
@@ -76,26 +101,32 @@ if not os.path.exists(DB_KLASORU):
         except Exception as e:
             print(f"Google Drive'dan indirme başarısız: {e}")
 
-    _parcalar = sorted(_glob.glob(os.path.join(VERI_KLASORU, "veritabani.zip.*")))
-    _birlesik_zip = os.path.join(VERI_KLASORU, "_veritabani_birlesik.zip")
+    if not os.path.exists(_tek_zip) or not _zip_saglam_mi(_tek_zip):
+        _parcalar = sorted(_glob.glob(os.path.join(VERI_KLASORU, "veritabani.zip.*")))
+        if _parcalar and not os.path.exists(_birlesik_zip):
+            print(f"{len(_parcalar)} parça bulundu, birleştiriliyor...")
+            with open(_birlesik_zip, "wb") as cikti:
+                for parca in _parcalar:
+                    with open(parca, "rb") as p:
+                        cikti.write(p.read())
+            print("Parçalar birleştirildi.")
 
-    if _parcalar and not os.path.exists(_birlesik_zip) and not os.path.exists(_tek_zip):
-        print(f"{len(_parcalar)} parça bulundu, birleştiriliyor...")
-        with open(_birlesik_zip, "wb") as cikti:
-            for parca in _parcalar:
-                with open(parca, "rb") as p:
-                    cikti.write(p.read())
-        print("Parçalar birleştirildi.")
-
-    _acilacak_zip = _tek_zip if os.path.exists(_tek_zip) else (
-        _birlesik_zip if os.path.exists(_birlesik_zip) else None
+    _acilacak_zip = _tek_zip if _zip_saglam_mi(_tek_zip) else (
+        _birlesik_zip if os.path.exists(_birlesik_zip) and _zip_saglam_mi(_birlesik_zip) else None
     )
 
-    if _acilacak_zip:
-        print(f"'{_acilacak_zip}' açılıyor... (bu biraz sürebilir)")
-        with zipfile.ZipFile(_acilacak_zip, 'r') as z:
-            z.extractall(VERI_KLASORU)
-        print("Veritabanı hazır.")
+    if not _acilacak_zip:
+        print("HATA: Sağlam bir veritabanı zip'i bulunamadı/indirilemedi.")
+        return
+
+    print(f"'{_acilacak_zip}' açılıyor... (bu biraz sürebilir)")
+    with zipfile.ZipFile(_acilacak_zip, 'r') as z:
+        z.extractall(VERI_KLASORU)
+    print("Veritabanı hazır.")
+
+
+if not os.path.exists(DB_KLASORU):
+    _veritabanini_hazirla()
 
 AYLAR_TR = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
             "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
