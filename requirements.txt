@@ -7,3 +7,4 @@ openpyxl
 requests
 psycopg2-binary
 asyncpg
+python-telegram-bot
