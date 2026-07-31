@@ -207,13 +207,21 @@ class GeminiEmbeddingFonksiyonu(EmbeddingFunction):
         raise RuntimeError(f"Embedding alınamadı: {metin[:50]}...")
 
 
+def _turkiye_simdi():
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Europe/Istanbul"))
+    except Exception:
+        return datetime.now()
+
+
 def bugunun_tarihi():
-    simdi = datetime.now()
+    simdi = _turkiye_simdi()
     return f"{simdi.day} {AYLAR_TR[simdi.month - 1]} {simdi.year}, {GUNLER_TR[simdi.weekday()]}"
 
 
 def su_anki_saat():
-    simdi = datetime.now()
+    simdi = _turkiye_simdi()
     saat = simdi.hour
     if 5 <= saat < 12:
         vakit = "sabah"
@@ -495,20 +503,110 @@ def excel_plan_olustur(satirlar, baslik="Program"):
     return arabellek.getvalue()
 
 
-# ============== KİMLİK DOĞRULAMA / KALICI SOHBET GEÇMİŞİ ==============
-# NOT: Şimdilik devre dışı — SQLite tabloları otomatik oluşmadığı için
-# hataya yol açıyordu. Uygulama girişsiz, sorunsuz çalışsın diye kapattık.
-# Sohbet geçmişi, tarayıcı sekmesi açık kaldığı sürece hâlâ hatırlanıyor
-# (cl.user_session üzerinden) — sadece "farklı günlerde eski sohbete
-# dönme" özelliği şimdilik yok. İstersek ileride tekrar ekleriz.
-#
-# @cl.password_auth_callback
-# def auth_callback(username: str, password: str):
-#     return cl.User(identifier=username or "ben")
-#
-# @cl.data_layer
-# def get_data_layer():
-#     return SQLAlchemyDataLayer(conninfo=f"sqlite+aiosqlite:///{SOHBET_DB_YOLU}")
+# ============== KİMLİK DOĞRULAMA / KALICI SOHBET GEÇMİŞİ (PostgreSQL) ==============
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+
+def _postgres_semasini_hazirla():
+    """Chainlit'in resmi tablo yapısını (users, threads, steps, elements,
+    feedbacks) PostgreSQL'de bir kereliğine oluşturur. Tablolar zaten
+    varsa (IF NOT EXISTS) hiçbir şey yapmaz, güvenle her açılışta çağrılabilir."""
+    if not DATABASE_URL:
+        return
+    try:
+        import psycopg2
+        baglanti = psycopg2.connect(DATABASE_URL)
+        baglanti.autocommit = True
+        imlec = baglanti.cursor()
+        imlec.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                "id" UUID PRIMARY KEY,
+                "identifier" TEXT NOT NULL UNIQUE,
+                "metadata" JSONB NOT NULL,
+                "createdAt" TEXT
+            );
+            CREATE TABLE IF NOT EXISTS threads (
+                "id" UUID PRIMARY KEY,
+                "createdAt" TEXT,
+                "name" TEXT,
+                "userId" UUID,
+                "userIdentifier" TEXT,
+                "tags" TEXT[],
+                "metadata" JSONB,
+                FOREIGN KEY ("userId") REFERENCES users("id") ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS steps (
+                "id" UUID PRIMARY KEY,
+                "name" TEXT NOT NULL,
+                "type" TEXT NOT NULL,
+                "threadId" UUID NOT NULL,
+                "parentId" UUID,
+                "streaming" BOOLEAN NOT NULL,
+                "waitForAnswer" BOOLEAN,
+                "isError" BOOLEAN,
+                "metadata" JSONB,
+                "tags" TEXT[],
+                "input" TEXT,
+                "output" TEXT,
+                "createdAt" TEXT,
+                "command" TEXT,
+                "start" TEXT,
+                "end" TEXT,
+                "generation" JSONB,
+                "showInput" TEXT,
+                "language" TEXT,
+                "indent" INT,
+                "defaultOpen" BOOLEAN,
+                "modes" JSONB,
+                FOREIGN KEY ("threadId") REFERENCES threads("id") ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS elements (
+                "id" UUID PRIMARY KEY,
+                "threadId" UUID,
+                "type" TEXT,
+                "url" TEXT,
+                "chainlitKey" TEXT,
+                "name" TEXT NOT NULL,
+                "display" TEXT,
+                "objectKey" TEXT,
+                "size" TEXT,
+                "page" INT,
+                "language" TEXT,
+                "forId" UUID,
+                "mime" TEXT,
+                "props" JSONB,
+                FOREIGN KEY ("threadId") REFERENCES threads("id") ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS feedbacks (
+                "id" UUID PRIMARY KEY,
+                "forId" UUID NOT NULL,
+                "threadId" UUID NOT NULL,
+                "value" INT NOT NULL,
+                "comment" TEXT,
+                FOREIGN KEY ("threadId") REFERENCES threads("id") ON DELETE CASCADE
+            );
+        """)
+        imlec.close()
+        baglanti.close()
+        print("PostgreSQL şeması hazır (tablolar mevcut ya da oluşturuldu).")
+    except Exception as e:
+        print(f"PostgreSQL şeması hazırlanırken hata: {e}")
+
+
+_postgres_semasini_hazirla()
+
+
+@cl.password_auth_callback
+def auth_callback(username: str, password: str):
+    # Sadece kendi kullanımın için - herhangi bir kullanıcı adıyla giriş
+    # kabul edilir, gerçek bir güvenlik katmanı değil.
+    return cl.User(identifier=username or "ben")
+
+
+@cl.data_layer
+def get_data_layer():
+    _conninfo = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return SQLAlchemyDataLayer(conninfo=_conninfo)
 
 
 # ============== CHAINLIT OLAYLARI ==============
@@ -557,6 +655,57 @@ def _sohbet_json_arsivle(koleksiyon, dosya_yolu, dosya_adi):
     metadatalar = [{"video_id": f"Eski sohbet: {baslik}", "kaynak": "eski_sohbet"} for _ in parcalar]
     koleksiyon.add(documents=parcalar, ids=ids, metadatas=metadatalar)
     return len(parcalar)
+
+
+def _pcm_wav_yap(pcm_bytes, ornek_hizi=24000, kanal=1, ornek_genisligi=2):
+    """Chainlit'ten gelen ham (headersiz) PCM ses verisini, Gemini'nin
+    anlayabileceği düzgün bir WAV dosyasına çevirir."""
+    import wave
+    tampon = BytesIO()
+    with wave.open(tampon, 'wb') as wf:
+        wf.setnchannels(kanal)
+        wf.setsampwidth(ornek_genisligi)
+        wf.setframerate(ornek_hizi)
+        wf.writeframes(pcm_bytes)
+    return tampon.getvalue()
+
+
+@cl.on_audio_start
+async def ses_baslar():
+    cl.user_session.set("ses_parcalari", [])
+    return True
+
+
+@cl.on_audio_chunk
+async def ses_parcasi_geldi(chunk: cl.InputAudioChunk):
+    parcalar = cl.user_session.get("ses_parcalari") or []
+    parcalar.append(chunk.data)
+    cl.user_session.set("ses_parcalari", parcalar)
+
+
+@cl.on_audio_end
+async def ses_biter():
+    client_gemini, koleksiyon = istemcileri_al()
+    parcalar = cl.user_session.get("ses_parcalari") or []
+    cl.user_session.set("ses_parcalari", [])
+
+    if not parcalar:
+        return
+
+    pcm_veri = b"".join(parcalar)
+    wav_veri = _pcm_wav_yap(pcm_veri)
+
+    async with cl.Step(name="Ses yazıya çevriliyor", type="tool"):
+        yazi = await cl.make_async(ses_yaziya_cevir)(client_gemini, wav_veri, "audio/wav")
+
+    if not yazi:
+        await cl.Message(content="Ses anlaşılamadı, tekrar dener misin? "
+                                  "(Sorun devam ederse ataç ikonuyla ses dosyası da ekleyebilirsin.)").send()
+        return
+
+    kullanici_mesaji = cl.Message(content=yazi, author="Kullanıcı")
+    await kullanici_mesaji.send()
+    await mesaj_geldi(kullanici_mesaji)
 
 
 @cl.on_message
