@@ -54,19 +54,32 @@ KAC_PARCA_GETIRILSIN = 15
 UYGULAMA_ADI = "Koçum"
 # =======================================
 
-# ============== VERİTABANI ZIP'İNİ OTOMATİK BİRLEŞTİRME + AÇMA ==============
-# Büyük veritabanı, 7-Zip ile küçük parçalara bölünüp yüklendiği için
-# (veritabani.zip.001, .002, ... gibi), önce bu parçaları sırayla
-# birleştirip tek bir zip dosyası oluşturuyoruz, sonra onu açıyoruz.
-# Bu, sadece '/data/veritabani' klasörü henüz yoksa çalışır (bir kereliğine).
+# ============== VERİTABANI ZIP'İNİ OTOMATİK İNDİRME + BİRLEŞTİRME + AÇMA ==============
+# Öncelik sırası:
+# 1) '/data/veritabani' zaten varsa hiçbir şey yapma
+# 2) Yoksa, Google Drive'dan indir (GOOGLE_DRIVE_DOSYA_ID tanımlıysa)
+# 3) Ya da yerelde yüklenmiş parçaları (veritabani.zip.001, ...) birleştir
+# 4) Ya da tek parça veritabani.zip'i aç
+GOOGLE_DRIVE_DOSYA_ID = "1NjzlweOvH9-GF4HxqR0viHWc8SaaqTDi"
+
 if not os.path.exists(DB_KLASORU):
     import glob as _glob
 
-    _parcalar = sorted(_glob.glob(os.path.join(VERI_KLASORU, "veritabani.zip.*")))
-    _birlesik_zip = os.path.join(VERI_KLASORU, "_veritabani_birlesik.zip")
     _tek_zip = os.path.join(VERI_KLASORU, "veritabani.zip")
 
-    if _parcalar and not os.path.exists(_birlesik_zip) and not os.path.exists(DB_KLASORU):
+    if GOOGLE_DRIVE_DOSYA_ID and not os.path.exists(_tek_zip):
+        try:
+            import gdown
+            print("Veritabanı Google Drive'dan indiriliyor... (bu birkaç dakika sürebilir)")
+            gdown.download(id=GOOGLE_DRIVE_DOSYA_ID, output=_tek_zip, quiet=False)
+            print("İndirme tamamlandı.")
+        except Exception as e:
+            print(f"Google Drive'dan indirme başarısız: {e}")
+
+    _parcalar = sorted(_glob.glob(os.path.join(VERI_KLASORU, "veritabani.zip.*")))
+    _birlesik_zip = os.path.join(VERI_KLASORU, "_veritabani_birlesik.zip")
+
+    if _parcalar and not os.path.exists(_birlesik_zip) and not os.path.exists(_tek_zip):
         print(f"{len(_parcalar)} parça bulundu, birleştiriliyor...")
         with open(_birlesik_zip, "wb") as cikti:
             for parca in _parcalar:
@@ -74,8 +87,8 @@ if not os.path.exists(DB_KLASORU):
                     cikti.write(p.read())
         print("Parçalar birleştirildi.")
 
-    _acilacak_zip = _birlesik_zip if os.path.exists(_birlesik_zip) else (
-        _tek_zip if os.path.exists(_tek_zip) else None
+    _acilacak_zip = _tek_zip if os.path.exists(_tek_zip) else (
+        _birlesik_zip if os.path.exists(_birlesik_zip) else None
     )
 
     if _acilacak_zip:
