@@ -150,10 +150,25 @@ def _veritabanini_hazirla():
             os.remove(_parca)
     except Exception:
         pass
+
+    # "Tamamlandı" işareti — bu dosya varsa, açma işleminin SONUNA kadar
+    # sorunsuz geldiğini biliyoruz. Yoksa (yarım kalmışsa) bir dahaki
+    # başlangıçta her şeyi silip baştan deneriz.
+    with open(_tamamlandi_isareti, "w") as f:
+        f.write("ok")
     print("Veritabanı hazır.")
 
 
-if not os.path.exists(DB_KLASORU):
+_tamamlandi_isareti = os.path.join(VERI_KLASORU, "_veritabani_tamamlandi.txt")
+
+if not os.path.exists(_tamamlandi_isareti):
+    # Önceki deneme yarım kalmış olabilir (klasör kısmen oluşmuş ama
+    # işaret dosyası yok) — güvenli olması için varsa temizleyip
+    # sıfırdan başlıyoruz.
+    if os.path.exists(DB_KLASORU):
+        print("Yarım kalmış eski veritabanı klasörü bulundu, temizleniyor...")
+        import shutil as _shutil
+        _shutil.rmtree(DB_KLASORU, ignore_errors=True)
     _veritabanini_hazirla()
 
 AYLAR_TR = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
