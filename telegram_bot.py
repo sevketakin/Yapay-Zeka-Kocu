@@ -551,6 +551,73 @@ async def temizle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Sohbet geçmişin temizlendi, sıfırdan başlıyoruz.")
 
 
+async def web_sohbetlerini_getir(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Koçum'un web (Chainlit) sürümündeki sohbetleri, aynı PostgreSQL
+    veritabanından okuyup Telegram'ın kendi basit tablosuna kopyalar.
+    Kullanım: /web_sohbetlerini_getir seninmailin@gmail.com"""
+    if not context.args:
+        await update.message.reply_text(
+            "Kullanım: /web_sohbetlerini_getir email@adresin.com\n"
+            "(Koçum web'e giriş yaptığın e-posta neyse onu yaz)"
+        )
+        return
+
+    web_email = context.args[0]
+    kullanici_id = update.effective_user.id
+
+    if not DATABASE_URL:
+        await update.message.reply_text("Veritabanı bağlantısı yok, işlem yapılamadı.")
+        return
+
+    try:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        imlec = baglanti.cursor()
+
+        imlec.execute('SELECT id FROM users WHERE identifier = %s', (web_email,))
+        satir = imlec.fetchone()
+        if not satir:
+            await update.message.reply_text(
+                f"'{web_email}' ile web'de giriş yapılmış bir hesap bulamadım."
+            )
+            imlec.close()
+            baglanti.close()
+            return
+        web_user_id = satir[0]
+
+        imlec.execute(
+            'SELECT id, name FROM threads WHERE "userId" = %s ORDER BY "createdAt" ASC',
+            (web_user_id,),
+        )
+        threadler = imlec.fetchall()
+
+        toplam_mesaj = 0
+        for thread_id, thread_adi in threadler:
+            imlec.execute(
+                'SELECT type, output, input, "createdAt" FROM steps '
+                'WHERE "threadId" = %s AND type IN (\'user_message\', \'assistant_message\') '
+                'ORDER BY "createdAt" ASC',
+                (thread_id,),
+            )
+            adimlar = imlec.fetchall()
+            for tur, cikti, girdi, _zaman in adimlar:
+                icerik = cikti or girdi or ""
+                if not icerik.strip():
+                    continue
+                rol = "user" if tur == "user_message" else "model"
+                mesaji_kaydet(kullanici_id, rol, icerik)
+                toplam_mesaj += 1
+
+        imlec.close()
+        baglanti.close()
+
+        await update.message.reply_text(
+            f"✅ Web'deki {len(threadler)} sohbetten toplam {toplam_mesaj} mesaj "
+            f"buraya (gerçek konuşma geçmişine) aktarıldı. Artık onları da hatırlıyorum."
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Aktarma sırasında hata oluştu: {e}")
+
+
 async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None):
     client_gemini, koleksiyon = istemcileri_al()
     kullanici_id = update.effective_user.id
@@ -718,6 +785,7 @@ def main():
     app.add_handler(CommandHandler("yumusak_ac", yumusak_ac))
     app.add_handler(CommandHandler("yumusak_kapat", yumusak_kapat))
     app.add_handler(CommandHandler("temizle", temizle))
+    app.add_handler(CommandHandler("web_sohbetlerini_getir", web_sohbetlerini_getir))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_geldi))
     app.add_handler(MessageHandler(filters.VOICE, ses_geldi))
     app.add_handler(MessageHandler(filters.PHOTO, foto_geldi))
