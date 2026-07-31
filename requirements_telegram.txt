@@ -1,0 +1,7 @@
+python-telegram-bot
+chromadb
+google-genai
+openpyxl
+requests
+psycopg2-binary
+python-telegram-bot

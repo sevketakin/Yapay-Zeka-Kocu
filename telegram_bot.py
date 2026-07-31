@@ -1,0 +1,657 @@
+"""
+Koçum - Telegram Bot Sürümü
+================================================================
+
+Chainlit sürümüyle aynı beyni (Gemini + video/eski sohbet arşivi)
+kullanır, ama Telegram üzerinden çalışır. Basit, kendi kurduğumuz
+bir veritabanı tablosuyla (Chainlit'in karmaşık şemasına gerek
+kalmadan) her kullanıcının kendi sohbet geçmişini ayrı ayrı tutar.
+
+Birden fazla kişi (örn. sen ve kız arkadaşın) aynı botu kullanabilir,
+Telegram otomatik olarak kim yazdığını ayırt eder, herkesin kendi
+geçmişi ayrı kalır. Ortak olan tek şey video/bilgi arşivi.
+
+Gereksinim:
+    pip install python-telegram-bot chromadb google-genai openpyxl psycopg2-binary requests
+
+Ortam değişkenleri (Railway'de ayarlanacak):
+    TELEGRAM_BOT_TOKEN, GEMINI_API_ANAHTARI, DATABASE_URL, VERI_KLASORU
+"""
+
+import os
+import re
+import json
+import uuid
+import zipfile
+import glob
+import base64
+from io import BytesIO
+from datetime import datetime, timedelta
+
+from google import genai
+import chromadb
+from chromadb import Documents, EmbeddingFunction, Embeddings
+import psycopg2
+import requests
+
+from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, MessageHandler, CommandHandler, CallbackQueryHandler,
+    ContextTypes, filters,
+)
+
+# ============== AYARLAR ==============
+VERI_KLASORU = os.environ.get("VERI_KLASORU", ".")
+DB_KLASORU = os.path.join(VERI_KLASORU, "veritabani")
+GEMINI_API_ANAHTARI = os.environ.get("GEMINI_API_ANAHTARI", "")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+KOLEKSIYON_ADI = "video_transkriptleri"
+GEMINI_MODEL_LISTESI = [
+    "gemini-flash-latest",
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview",
+]
+KAC_PARCA_GETIRILSIN = 15
+UYGULAMA_ADI = "Koçum"
+
+# Buraya, "yumuşak ton" ile konuşulmasını istediğin kullanıcıların
+# Telegram ID'lerini ekleyebilirsin (örn. kız arkadaşının ID'si).
+# ID'yi öğrenmek için: bota /id yazması yeterli, sana ID'sini gösterir.
+YUMUSAK_TON_KULLANICILARI = set()
+
+GITHUB_ZIP_URL = (
+    "https://github.com/sevketakin/Yapay-Zeka-Kocu/releases/download/v1/veritabani.zip"
+)
+
+AYLAR_TR = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
+            "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
+GUNLER_TR = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
+GUN_INDEX = {"Pazartesi": 0, "Salı": 1, "Çarşamba": 2, "Perşembe": 3,
+             "Cuma": 4, "Cumartesi": 5, "Pazar": 6}
+
+
+# ============== VERİTABANI ZIP'İNİ OTOMATİK İNDİRME + AÇMA ==============
+def _zip_saglam_mi(yol):
+    try:
+        with zipfile.ZipFile(yol, 'r') as z:
+            return z.testzip() is None
+    except Exception:
+        return False
+
+
+def _veritabanini_hazirla():
+    _tamamlandi_isareti = os.path.join(VERI_KLASORU, "_veritabani_tamamlandi.txt")
+    if os.path.exists(_tamamlandi_isareti):
+        return
+
+    if os.path.exists(DB_KLASORU):
+        import shutil as _shutil
+        print("Yarım kalmış eski veritabanı klasörü bulundu, temizleniyor...")
+        _shutil.rmtree(DB_KLASORU, ignore_errors=True)
+
+    os.makedirs(VERI_KLASORU, exist_ok=True)
+    _tek_zip = os.path.join(VERI_KLASORU, "veritabani.zip")
+
+    if os.path.exists(_tek_zip) and not _zip_saglam_mi(_tek_zip):
+        os.remove(_tek_zip)
+
+    if not os.path.exists(_tek_zip):
+        try:
+            print("Veritabanı GitHub Release'ten indiriliyor... (bu birkaç dakika sürebilir)")
+            with requests.get(GITHUB_ZIP_URL, stream=True, allow_redirects=True, timeout=120) as yanit:
+                yanit.raise_for_status()
+                with open(_tek_zip, "wb") as f:
+                    for parca in yanit.iter_content(chunk_size=8 * 1024 * 1024):
+                        f.write(parca)
+            print("İndirme tamamlandı.")
+        except Exception as e:
+            print(f"GitHub'dan indirme başarısız: {e}")
+            if os.path.exists(_tek_zip):
+                os.remove(_tek_zip)
+            return
+
+    if not _zip_saglam_mi(_tek_zip):
+        print("HATA: İndirilen zip bozuk.")
+        return
+
+    print(f"'{_tek_zip}' açılıyor... (bu biraz sürebilir)")
+    with zipfile.ZipFile(_tek_zip, 'r') as z:
+        z.extractall(VERI_KLASORU)
+    os.remove(_tek_zip)
+
+    with open(_tamamlandi_isareti, "w") as f:
+        f.write("ok")
+    print("Veritabanı hazır.")
+
+
+# ============== GEMINI EMBEDDING (arama için) ==============
+class GeminiEmbeddingFonksiyonu(EmbeddingFunction):
+    def __init__(self, api_anahtari):
+        self.client = genai.Client(api_key=api_anahtari)
+
+    def __call__(self, input: Documents) -> Embeddings:
+        return [self._tek_embedding_al(metin) for metin in input]
+
+    def _tek_embedding_al(self, metin, max_deneme=3):
+        import time
+        for deneme in range(1, max_deneme + 1):
+            try:
+                sonuc = self.client.models.embed_content(
+                    model="gemini-embedding-001", contents=metin,
+                )
+                return sonuc.embeddings[0].values
+            except Exception as e:
+                hata_metni = str(e)
+                if "429" in hata_metni or "RESOURCE_EXHAUSTED" in hata_metni or "UNAVAILABLE" in hata_metni:
+                    time.sleep(5)
+                    continue
+                raise
+        raise RuntimeError(f"Embedding alınamadı: {metin[:50]}...")
+
+
+_client_gemini = None
+_koleksiyon = None
+
+
+def istemcileri_al():
+    global _client_gemini, _koleksiyon
+    if _client_gemini is None:
+        _client_gemini = genai.Client(api_key=GEMINI_API_ANAHTARI)
+    if _koleksiyon is None:
+        embed_fonksiyonu = GeminiEmbeddingFonksiyonu(GEMINI_API_ANAHTARI)
+        db = chromadb.PersistentClient(path=DB_KLASORU)
+        _koleksiyon = db.get_collection(name=KOLEKSIYON_ADI, embedding_function=embed_fonksiyonu)
+    return _client_gemini, _koleksiyon
+
+
+def baglami_hazirla(bulunan_parcalar):
+    metinler = bulunan_parcalar['documents'][0]
+    metadatalar = bulunan_parcalar['metadatas'][0]
+    baglam_parcalari = []
+    kaynaklar = []
+    for metin, meta in zip(metinler, metadatalar):
+        video_id = meta.get('video_id', 'bilinmiyor')
+        kaynak_turu = meta.get('kaynak', '')
+        onizleme = metin[:250].strip() + ("..." if len(metin) > 250 else "")
+        if kaynak_turu == "eski_sohbet":
+            baglam_parcalari.append(
+                f"[GERÇEK KİŞİSEL GEÇMİŞ — {video_id} — bu kullanıcının SENİNLE "
+                f"gerçekten daha önce konuştuğu bir şey, genel bir video örneği DEĞİL]\n{metin}"
+            )
+            kaynaklar.append({"link": None, "baslik": video_id, "onizleme": onizleme})
+        else:
+            link = f"https://youtube.com/watch?v={video_id}"
+            baglam_parcalari.append(
+                f"[Genel video içeriği (BAŞKA insanların/koçların anlattığı örnekler, "
+                f"kullanıcının kendi kişisel geçmişi DEĞİL): {link}]\n{metin}"
+            )
+            kaynaklar.append({"link": link, "baslik": None, "onizleme": onizleme})
+    return "\n\n---\n\n".join(baglam_parcalari), kaynaklar
+
+
+# ============== BASİT SOHBET GEÇMİŞİ (kendi tablomuz) ==============
+def _basit_semayi_hazirla():
+    if not DATABASE_URL:
+        return
+    try:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        baglanti.autocommit = True
+        imlec = baglanti.cursor()
+        imlec.execute("""
+            CREATE TABLE IF NOT EXISTS tg_mesajlar (
+                id SERIAL PRIMARY KEY,
+                kullanici_id BIGINT NOT NULL,
+                rol TEXT NOT NULL,
+                icerik TEXT NOT NULL,
+                zaman TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS tg_ayarlar (
+                kullanici_id BIGINT PRIMARY KEY,
+                yumusak_ton BOOLEAN DEFAULT FALSE
+            );
+        """)
+        imlec.close()
+        baglanti.close()
+        print("Telegram bot tabloları hazır.")
+    except Exception as e:
+        print(f"Tablo hazırlanırken hata: {e}")
+
+
+def gecmisi_oku(kullanici_id, limit=40):
+    if not DATABASE_URL:
+        return []
+    try:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        imlec = baglanti.cursor()
+        imlec.execute(
+            "SELECT rol, icerik FROM ("
+            "  SELECT rol, icerik, zaman FROM tg_mesajlar "
+            "  WHERE kullanici_id = %s ORDER BY zaman DESC LIMIT %s"
+            ") alt ORDER BY zaman ASC",
+            (kullanici_id, limit),
+        )
+        satirlar = imlec.fetchall()
+        imlec.close()
+        baglanti.close()
+        return [{"role": r, "parts": [{"text": i}]} for r, i in satirlar]
+    except Exception as e:
+        print(f"Geçmiş okunurken hata: {e}")
+        return []
+
+
+def mesaji_kaydet(kullanici_id, rol, icerik):
+    if not DATABASE_URL:
+        return
+    try:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        baglanti.autocommit = True
+        imlec = baglanti.cursor()
+        imlec.execute(
+            "INSERT INTO tg_mesajlar (kullanici_id, rol, icerik) VALUES (%s, %s, %s)",
+            (kullanici_id, rol, icerik),
+        )
+        imlec.close()
+        baglanti.close()
+    except Exception as e:
+        print(f"Mesaj kaydedilirken hata: {e}")
+
+
+def yumusak_ton_mu(kullanici_id):
+    if kullanici_id in YUMUSAK_TON_KULLANICILARI:
+        return True
+    if not DATABASE_URL:
+        return False
+    try:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        imlec = baglanti.cursor()
+        imlec.execute("SELECT yumusak_ton FROM tg_ayarlar WHERE kullanici_id = %s", (kullanici_id,))
+        satir = imlec.fetchone()
+        imlec.close()
+        baglanti.close()
+        return bool(satir[0]) if satir else False
+    except Exception:
+        return False
+
+
+def yumusak_ton_ayarla(kullanici_id, deger):
+    if not DATABASE_URL:
+        return
+    try:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        baglanti.autocommit = True
+        imlec = baglanti.cursor()
+        imlec.execute(
+            "INSERT INTO tg_ayarlar (kullanici_id, yumusak_ton) VALUES (%s, %s) "
+            "ON CONFLICT (kullanici_id) DO UPDATE SET yumusak_ton = %s",
+            (kullanici_id, deger, deger),
+        )
+        imlec.close()
+        baglanti.close()
+    except Exception as e:
+        print(f"Ayar kaydedilirken hata: {e}")
+
+
+# ============== TARİH/SAAT ==============
+def _turkiye_simdi():
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Europe/Istanbul"))
+    except Exception:
+        return datetime.now()
+
+
+def bugunun_tarihi():
+    simdi = _turkiye_simdi()
+    return f"{simdi.day} {AYLAR_TR[simdi.month - 1]} {simdi.year}, {GUNLER_TR[simdi.weekday()]}"
+
+
+def su_anki_saat():
+    simdi = _turkiye_simdi()
+    saat = simdi.hour
+    if 5 <= saat < 12:
+        vakit = "sabah"
+    elif 12 <= saat < 17:
+        vakit = "öğleden sonra"
+    elif 17 <= saat < 21:
+        vakit = "akşam"
+    else:
+        vakit = "gece"
+    return simdi.strftime("%H:%M"), vakit
+
+
+# ============== SES YAZIYA ÇEVİRME ==============
+def ses_yaziya_cevir(client_gemini, ses_bytes, mime_tipi="audio/ogg"):
+    ses_b64 = base64.b64encode(ses_bytes).decode("utf-8")
+    denenecek_tipler = [mime_tipi] + [
+        t for t in ["audio/ogg", "audio/wav", "audio/mp3", "audio/mp4", "audio/webm"]
+        if t != mime_tipi
+    ]
+    for tip in denenecek_tipler:
+        for model_adi in GEMINI_MODEL_LISTESI:
+            try:
+                yanit = client_gemini.models.generate_content(
+                    model=model_adi,
+                    contents=[
+                        {"role": "user", "parts": [
+                            {"text": "Bu ses kaydını sadece yazıya çevir, başka hiçbir şey ekleme."},
+                            {"inline_data": {"mime_type": tip, "data": ses_b64}},
+                        ]}
+                    ],
+                )
+                if yanit.text and yanit.text.strip():
+                    return yanit.text.strip()
+            except Exception:
+                continue
+    return None
+
+
+# ============== ANA CEVAP ÜRETME ==============
+def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime=None, yumusak=False):
+    bugun = bugunun_tarihi()
+    saat, vakit = su_anki_saat()
+
+    ton_talimati = (
+        "TON: Benimle samimi, sıcak, motive edici ve gerçek bir antrenör "
+        "gibi konuş — resmi/mesafeli bir asistan gibi değil."
+        if not yumusak else
+        "TON: Yumuşak, nazik, destekleyici ve sabırlı bir dille konuş — "
+        "baskıcı/sert bir koç gibi değil, anlayışlı bir rehber gibi."
+    )
+
+    sistem_mesaji = (
+        "🚨 EN ÖNEMLİ KURAL — EN BAŞTA OKU VE HER ZAMAN UYGULA:\n"
+        "Kullanıcı sana 'geçen hafta/gün ne yaptık', 'dün ne konuşmuştuk', "
+        "'hatırlıyor musun', kaldırdığı ağırlıklar, koştuğu mesafeler gibi "
+        "KENDİ KİŞİSEL geçmişiyle ilgili bir şey sorduğunda: SADECE ve "
+        "SADECE aşağıda sana verilen gerçek konuşma geçmişinde (ÖNCEKİ "
+        "MESAJLAR) ya da '[GERÇEK KİŞİSEL GEÇMİŞ ...]' etiketli notlarda "
+        "GERÇEKTEN yazan bilgiyi kullan. '[Genel video içeriği ...]' "
+        "etiketli notlar BAŞKA insanların kendi hikayeleri — bunları asla "
+        "kullanıcının kendi hikayesiymiş gibi anlatma. Bilmiyorsan dürüstçe "
+        "söyle, asla kişisel veri uydurma.\n\n"
+        f"Bugünün tarihi: {bugun}. Şu anki saat: {saat} ({vakit}). Bu bilgiyi "
+        f"antrenman/beslenme önerilerinde dikkate al.\n\n"
+        "Sen benim kişisel hybrid antrenörümsün. Amacın, beni hybrid "
+        "sistemde (koşu, bisiklet, yüzme, kuvvet vb.) en iyi versiyonuma "
+        "ulaştırmak için elinden gelen tüm yardımı sağlamak. Spor bilimi, "
+        "antrenman periyotlaması, beslenme, toparlanma konularında "
+        "deneyimli bir antrenör gibisin.\n\n"
+        "Sana verilen notlar (varsa) senin kendi bilgi birikimin gibi "
+        "davran, dışarıdan kaynak gibi sunma. Alakalıysa öncelikle bunlara "
+        "dayan, alakasızsa kendi genel uzmanlığından cevap ver.\n\n"
+        f"{ton_talimati}"
+    )
+
+    contents = list(gecmis)
+    kullanici_mesaji = f"(Alakalı notlar varsa aşağıda, yoksa yok say):\n\n{baglam}\n\nSORU: {soru}"
+    parts = [{"text": kullanici_mesaji}]
+    if gorsel_b64:
+        parts.append({"inline_data": {"mime_type": gorsel_mime, "data": gorsel_b64}})
+    contents.append({"role": "user", "parts": parts})
+
+    for model_adi in GEMINI_MODEL_LISTESI:
+        try:
+            yanit = client_gemini.models.generate_content(
+                model=model_adi, contents=contents,
+                config={"system_instruction": sistem_mesaji},
+            )
+            if yanit.text and yanit.text.strip():
+                return yanit.text
+        except Exception:
+            continue
+    return "Şu an cevap üretemedim, lütfen tekrar dener misin?"
+
+
+# ============== PROGRAM -> TAKVİM/EXCEL (kısaltılmış, arayuz.py'dekiyle aynı mantık) ==============
+def programdan_json_cikar(client_gemini, program_metni):
+    talimat = (
+        "Aşağıdaki metinde bir antrenman/beslenme programı var. SADECE "
+        "JSON döndür, başka hiçbir şey yazma:\n\n"
+        '[{"gun": "Pazartesi", "baslik": "...", "baslangic_saat": "18:00", '
+        '"bitis_saat": "19:00", "aciklama": "..."}]\n\n'
+        "gun değeri: Pazartesi, Salı, Çarşamba, Perşembe, Cuma, Cumartesi, Pazar. "
+        "Program yoksa boş liste [] döndür.\n\n"
+        f"METİN:\n{program_metni}"
+    )
+    for model_adi in GEMINI_MODEL_LISTESI:
+        try:
+            yanit = client_gemini.models.generate_content(model=model_adi, contents=talimat)
+            metin = re.sub(r"^```json\s*|\s*```$", "", yanit.text.strip(), flags=re.MULTILINE).strip("`").strip()
+            return json.loads(metin)
+        except Exception:
+            continue
+    return None
+
+
+def sonraki_gun_tarihi(hedef_gun_index):
+    bugun = datetime.now().date()
+    fark = (hedef_gun_index - bugun.weekday()) % 7
+    return bugun + timedelta(days=fark)
+
+
+def ics_plan_olustur(etkinlikler):
+    satirlar = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Kocum//TR//", "CALSCALE:GREGORIAN"]
+    for e in etkinlikler:
+        gun = e.get("gun", "")
+        if gun not in GUN_INDEX:
+            continue
+        try:
+            bs_saat, bs_dk = map(int, e.get("baslangic_saat", "18:00").split(":"))
+            bt_saat, bt_dk = map(int, e.get("bitis_saat", "19:00").split(":"))
+        except Exception:
+            continue
+        tarih = sonraki_gun_tarihi(GUN_INDEX[gun])
+        satirlar.append("BEGIN:VEVENT")
+        satirlar.append(f"UID:{uuid.uuid4()}")
+        satirlar.append(f"DTSTAMP:{datetime.now().strftime('%Y%m%dT%H%M%SZ')}")
+        satirlar.append(f"DTSTART;TZID=Europe/Istanbul:{tarih.strftime('%Y%m%d')}T{bs_saat:02d}{bs_dk:02d}00")
+        satirlar.append(f"DTEND;TZID=Europe/Istanbul:{tarih.strftime('%Y%m%d')}T{bt_saat:02d}{bt_dk:02d}00")
+        satirlar.append(f"SUMMARY:[{UYGULAMA_ADI}] {e.get('baslik', 'Etkinlik')}")
+        if e.get("aciklama"):
+            satirlar.append(f"DESCRIPTION:{e['aciklama']}")
+        satirlar.append("END:VEVENT")
+    satirlar.append("END:VCALENDAR")
+    return "\r\n".join(satirlar)
+
+
+def programdan_excel_json_cikar(client_gemini, program_metni):
+    talimat = (
+        "Aşağıdaki metinde bir antrenman/beslenme programı var. SADECE "
+        "JSON döndür:\n\n"
+        '[{"gun": "Pazartesi", "kategori": "Antrenman", "baslik": "...", '
+        '"detay": "...", "sure_kalori": "60 dk"}]\n\n'
+        f"METİN:\n{program_metni}"
+    )
+    for model_adi in GEMINI_MODEL_LISTESI:
+        try:
+            yanit = client_gemini.models.generate_content(model=model_adi, contents=talimat)
+            metin = re.sub(r"^```json\s*|\s*```$", "", yanit.text.strip(), flags=re.MULTILINE).strip("`").strip()
+            return json.loads(metin)
+        except Exception:
+            continue
+    return None
+
+
+def excel_plan_olustur(satirlar):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Program"
+    basliklar = ["Gün", "Kategori", "Başlık", "Detay", "Süre/Kalori"]
+    b_font = Font(name="Arial", bold=True, color="FFFFFF", size=11)
+    b_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
+    h_font = Font(name="Arial", size=10)
+    kenar = Border(*(Side(style="thin", color="D1D5DB"),) * 4)
+
+    for i, m in enumerate(basliklar, start=1):
+        h = ws.cell(row=1, column=i, value=m)
+        h.font, h.fill, h.border = b_font, b_fill, kenar
+        h.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    for r, e in enumerate(satirlar, start=2):
+        degerler = [e.get("gun", ""), e.get("kategori", ""), e.get("baslik", ""),
+                    e.get("detay", ""), e.get("sure_kalori", "")]
+        for c, d in enumerate(degerler, start=1):
+            h = ws.cell(row=r, column=c, value=d)
+            h.font, h.border = h_font, kenar
+            h.alignment = Alignment(vertical="top", wrap_text=True)
+
+    for i, g in enumerate([12, 12, 22, 45, 14], start=1):
+        ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = g
+    ws.freeze_panes = "A2"
+
+    tampon = BytesIO()
+    wb.save(tampon)
+    return tampon.getvalue()
+
+
+# ============== TELEGRAM HANDLER'LARI ==============
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        f"Merhaba! Ben {UYGULAMA_ADI}, senin kişisel hybrid antrenörünüm. 💪\n\n"
+        f"Yazarak, sesli mesajla ya da fotoğraf göndererek soru sorabilirsin.\n"
+        f"/id — Telegram ID'ni gösterir\n"
+        f"/yumusak_ac — daha yumuşak bir ton iste\n"
+        f"/yumusak_kapat — normal tona dön\n"
+        f"/temizle — kendi sohbet geçmişini sıfırla"
+    )
+
+
+async def id_goster(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Telegram ID'n: {update.effective_user.id}")
+
+
+async def yumusak_ac(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    yumusak_ton_ayarla(update.effective_user.id, True)
+    await update.message.reply_text("Tamamdır, bundan sonra daha yumuşak bir tonla konuşacağım. 🌿")
+
+
+async def yumusak_kapat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    yumusak_ton_ayarla(update.effective_user.id, False)
+    await update.message.reply_text("Tamamdır, normal (motive edici) tona döndüm. 💪")
+
+
+async def temizle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kullanici_id = update.effective_user.id
+    if DATABASE_URL:
+        try:
+            baglanti = psycopg2.connect(DATABASE_URL)
+            baglanti.autocommit = True
+            imlec = baglanti.cursor()
+            imlec.execute("DELETE FROM tg_mesajlar WHERE kullanici_id = %s", (kullanici_id,))
+            imlec.close()
+            baglanti.close()
+        except Exception:
+            pass
+    await update.message.reply_text("Sohbet geçmişin temizlendi, sıfırdan başlıyoruz.")
+
+
+async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None):
+    client_gemini, koleksiyon = istemcileri_al()
+    kullanici_id = update.effective_user.id
+    yumusak = yumusak_ton_mu(kullanici_id)
+
+    bulunan = koleksiyon.query(query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
+    baglam, kaynaklar = "", []
+    if bulunan['documents'][0]:
+        baglam, kaynaklar = baglami_hazirla(bulunan)
+
+    gecmis = gecmisi_oku(kullanici_id)
+    cevap = cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64, gorsel_mime, yumusak)
+
+    mesaji_kaydet(kullanici_id, "user", soru)
+    mesaji_kaydet(kullanici_id, "model", cevap)
+
+    context.chat_data["son_cevap"] = cevap
+
+    dugmeler = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📅 Takvime Hazırla", callback_data="takvim"),
+         InlineKeyboardButton("📊 Excel Yap", callback_data="excel")],
+    ])
+    await update.message.reply_text(cevap, reply_markup=dugmeler)
+
+
+async def mesaj_geldi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _soruyu_isle(update, context, update.message.text)
+
+
+async def ses_geldi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    client_gemini, _ = istemcileri_al()
+    dosya = await context.bot.get_file(update.message.voice.file_id)
+    ses_bytes = bytes(await dosya.download_as_bytearray())
+    yazi = ses_yaziya_cevir(client_gemini, ses_bytes, "audio/ogg")
+    if not yazi:
+        await update.message.reply_text("Ses anlaşılamadı, tekrar dener misin?")
+        return
+    await update.message.reply_text(f"🎤 Anladığım: \"{yazi}\"")
+    await _soruyu_isle(update, context, yazi)
+
+
+async def foto_geldi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    dosya = await context.bot.get_file(update.message.photo[-1].file_id)
+    foto_bytes = bytes(await dosya.download_as_bytearray())
+    gorsel_b64 = base64.b64encode(foto_bytes).decode("utf-8")
+    soru = update.message.caption or "Bu fotoğrafa bakıp yorumlar mısın?"
+    await _soruyu_isle(update, context, soru, gorsel_b64, "image/jpeg")
+
+
+async def buton_tiklandi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    client_gemini, _ = istemcileri_al()
+    son_cevap = context.chat_data.get("son_cevap", "")
+    if not son_cevap:
+        await query.message.reply_text("Önce bir program oluşturmam lazım.")
+        return
+
+    if query.data == "takvim":
+        etkinlikler = programdan_json_cikar(client_gemini, son_cevap)
+        if not etkinlikler:
+            await query.message.reply_text("Bu cevapta takvime çevrilecek bir program bulamadım.")
+            return
+        ics_veri = ics_plan_olustur(etkinlikler)
+        await query.message.reply_document(
+            document=InputFile(BytesIO(ics_veri.encode("utf-8")), filename="program.ics"),
+            caption="📅 Takvim dosyan hazır, Google Takvim'e aktarabilirsin."
+        )
+    elif query.data == "excel":
+        satirlar = programdan_excel_json_cikar(client_gemini, son_cevap)
+        if not satirlar:
+            await query.message.reply_text("Bu cevapta Excel'e çevrilecek bir program bulamadım.")
+            return
+        excel_veri = excel_plan_olustur(satirlar)
+        await query.message.reply_document(
+            document=InputFile(BytesIO(excel_veri), filename="program.xlsx"),
+            caption="📊 Excel dosyan hazır."
+        )
+
+
+def main():
+    if not TELEGRAM_BOT_TOKEN:
+        print("HATA: TELEGRAM_BOT_TOKEN ayarlanmamış.")
+        return
+    _veritabanini_hazirla()
+    _basit_semayi_hazirla()
+    istemcileri_al()
+
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("id", id_goster))
+    app.add_handler(CommandHandler("yumusak_ac", yumusak_ac))
+    app.add_handler(CommandHandler("yumusak_kapat", yumusak_kapat))
+    app.add_handler(CommandHandler("temizle", temizle))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_geldi))
+    app.add_handler(MessageHandler(filters.VOICE, ses_geldi))
+    app.add_handler(MessageHandler(filters.PHOTO, foto_geldi))
+    app.add_handler(CallbackQueryHandler(buton_tiklandi))
+
+    print(f"{UYGULAMA_ADI} Telegram botu başlıyor...")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
