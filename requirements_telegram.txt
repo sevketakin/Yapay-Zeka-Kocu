@@ -1,7 +1,10 @@
-python-telegram-bot
+chainlit
+sqlalchemy
+aiosqlite
 chromadb
 google-genai
 openpyxl
 requests
 psycopg2-binary
+asyncpg
 python-telegram-bot
