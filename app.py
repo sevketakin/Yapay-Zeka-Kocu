@@ -640,6 +640,14 @@ def _postgres_semasini_hazirla():
                 "comment" TEXT,
                 FOREIGN KEY ("threadId") REFERENCES threads("id") ON DELETE CASCADE
             );
+
+            -- Chainlit sürümü ilerledikçe 'steps' tablosuna yeni sütunlar
+            -- ekleniyor. Kurulu sürümle uyumlu olmak için, bilinen tüm
+            -- olası eksik sütunları burada güvenle (varsa dokunmadan) ekliyoruz.
+            ALTER TABLE steps ADD COLUMN IF NOT EXISTS "command" TEXT;
+            ALTER TABLE steps ADD COLUMN IF NOT EXISTS "defaultOpen" BOOLEAN;
+            ALTER TABLE steps ADD COLUMN IF NOT EXISTS "modes" JSONB;
+            ALTER TABLE steps ADD COLUMN IF NOT EXISTS "autoCollapse" BOOLEAN;
         """)
         imlec.close()
         baglanti.close()
