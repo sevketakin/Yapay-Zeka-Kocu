@@ -513,7 +513,8 @@ def excel_plan_olustur(satirlar):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"Merhaba! Ben {UYGULAMA_ADI}, senin kişisel hybrid antrenörünüm. 💪\n\n"
-        f"Yazarak, sesli mesajla ya da fotoğraf göndererek soru sorabilirsin.\n"
+        f"Yazarak, sesli mesajla ya da fotoğraf göndererek soru sorabilirsin. "
+        f"Eski sohbet dosyalarını (.json) da gönderip arşive/geçmişe ekleyebilirsin.\n\n"
         f"/id — Telegram ID'ni gösterir\n"
         f"/yumusak_ac — daha yumuşak bir ton iste\n"
         f"/yumusak_kapat — normal tona dön\n"
@@ -630,6 +631,79 @@ async def buton_tiklandi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def belge_geldi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Eski sohbet .json dosyası gönderildiğinde: hem arşive (ChromaDB)
+    hem de gerçek konuşma geçmişine (tg_mesajlar) ekler."""
+    belge = update.message.document
+    if not belge.file_name.endswith(".json"):
+        await update.message.reply_text(
+            "Şu an sadece .json (eski sohbet dosyası) kabul ediyorum."
+        )
+        return
+
+    dosya = await context.bot.get_file(belge.file_id)
+    icerik_bytes = bytes(await dosya.download_as_bytearray())
+
+    try:
+        veri = json.loads(icerik_bytes.decode("utf-8"))
+    except Exception as e:
+        await update.message.reply_text(f"Dosya okunamadı: {e}")
+        return
+
+    mesajlar = veri.get("mesajlar", [])
+    if not mesajlar:
+        await update.message.reply_text("Bu dosyada mesaj bulunamadı, atlandı.")
+        return
+
+    baslik = veri.get("baslik", belge.file_name)
+    kullanici_id = update.effective_user.id
+
+    # 1) Arşive (ChromaDB) ekle — bilgi olarak her zaman aranabilir olsun
+    try:
+        _, koleksiyon = istemcileri_al()
+        satirlar = [f"# Eski Sohbet: {baslik}\n"]
+        for m in mesajlar:
+            rol = "Kullanıcı" if m.get("role") == "user" else "Koçum"
+            icerik = m.get("content", "")
+            if icerik:
+                satirlar.append(f"{rol}: {icerik}")
+        metin = "\n\n".join(satirlar)
+
+        parca_sayisi = 0
+        if len(metin.strip()) >= 50:
+            boyut, ortusme = 800, 150
+            parcalar, baslangic = [], 0
+            while baslangic < len(metin):
+                parcalar.append(metin[baslangic:baslangic + boyut])
+                baslangic += (boyut - ortusme)
+            etiket = f"eski_sohbet_{uuid.uuid4().hex[:8]}"
+            ids = [f"{etiket}_parca_{j}" for j in range(len(parcalar))]
+            metadatalar = [{"video_id": f"Eski sohbet: {baslik}", "kaynak": "eski_sohbet"}
+                            for _ in parcalar]
+            koleksiyon.add(documents=parcalar, ids=ids, metadatas=metadatalar)
+            parca_sayisi = len(parcalar)
+    except Exception as e:
+        parca_sayisi = f"HATA: {e}"
+
+    # 2) GERÇEK konuşma geçmişine ekle — böylece bota "geçen sohbette
+    #    ne demiştik" dediğinde arama yapmadan doğrudan hatırlar
+    eklenen_mesaj = 0
+    for m in mesajlar:
+        icerik = m.get("content", "")
+        rol = m.get("role")
+        if not icerik:
+            continue
+        mesaji_kaydet(kullanici_id, "user" if rol == "user" else "model", icerik)
+        eklenen_mesaj += 1
+
+    await update.message.reply_text(
+        f"📥 '{baslik}' eklendi:\n"
+        f"- Arşive: {parca_sayisi} parça\n"
+        f"- Gerçek sohbet geçmişine: {eklenen_mesaj} mesaj — artık doğrudan hatırlıyorum, "
+        f"arama yapmama bile gerek yok."
+    )
+
+
 def main():
     if not TELEGRAM_BOT_TOKEN:
         print("HATA: TELEGRAM_BOT_TOKEN ayarlanmamış.")
@@ -647,6 +721,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_geldi))
     app.add_handler(MessageHandler(filters.VOICE, ses_geldi))
     app.add_handler(MessageHandler(filters.PHOTO, foto_geldi))
+    app.add_handler(MessageHandler(filters.Document.ALL, belge_geldi))
     app.add_handler(CallbackQueryHandler(buton_tiklandi))
 
     print(f"{UYGULAMA_ADI} Telegram botu başlıyor...")
