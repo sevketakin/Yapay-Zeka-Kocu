@@ -56,6 +56,9 @@ GEMINI_MODEL_LISTESI = [
 KAC_PARCA_GETIRILSIN = 15
 UYGULAMA_ADI = "Koçum"
 
+STRAVA_CLIENT_ID = os.environ.get("STRAVA_CLIENT_ID", "")
+STRAVA_CLIENT_SECRET = os.environ.get("STRAVA_CLIENT_SECRET", "")
+
 # Buraya, "yumuşak ton" ile konuşulmasını istediğin kullanıcıların
 # Telegram ID'lerini ekleyebilirsin (örn. kız arkadaşının ID'si).
 # ID'yi öğrenmek için: bota /id yazması yeterli, sana ID'sini gösterir.
@@ -211,6 +214,12 @@ def _basit_semayi_hazirla():
                 kullanici_id BIGINT PRIMARY KEY,
                 yumusak_ton BOOLEAN DEFAULT FALSE
             );
+            CREATE TABLE IF NOT EXISTS strava_baglantilar (
+                kullanici_id BIGINT PRIMARY KEY,
+                refresh_token TEXT NOT NULL,
+                athlete_id BIGINT,
+                son_gorulen_aktivite_id BIGINT DEFAULT 0
+            );
         """)
         imlec.close()
         baglanti.close()
@@ -291,6 +300,100 @@ def yumusak_ton_ayarla(kullanici_id, deger):
         baglanti.close()
     except Exception as e:
         print(f"Ayar kaydedilirken hata: {e}")
+
+
+# ============== STRAVA ENTEGRASYONU ==============
+def strava_baglantisini_kaydet(kullanici_id, refresh_token, athlete_id=None):
+    if not DATABASE_URL:
+        return
+    baglanti = psycopg2.connect(DATABASE_URL)
+    baglanti.autocommit = True
+    imlec = baglanti.cursor()
+    imlec.execute(
+        "INSERT INTO strava_baglantilar (kullanici_id, refresh_token, athlete_id) "
+        "VALUES (%s, %s, %s) "
+        "ON CONFLICT (kullanici_id) DO UPDATE SET refresh_token = %s, athlete_id = %s",
+        (kullanici_id, refresh_token, athlete_id, refresh_token, athlete_id),
+    )
+    imlec.close()
+    baglanti.close()
+
+
+def strava_baglantisini_getir(kullanici_id):
+    if not DATABASE_URL:
+        return None
+    baglanti = psycopg2.connect(DATABASE_URL)
+    imlec = baglanti.cursor()
+    imlec.execute(
+        "SELECT refresh_token, athlete_id, son_gorulen_aktivite_id "
+        "FROM strava_baglantilar WHERE kullanici_id = %s",
+        (kullanici_id,),
+    )
+    satir = imlec.fetchone()
+    imlec.close()
+    baglanti.close()
+    if not satir:
+        return None
+    return {"refresh_token": satir[0], "athlete_id": satir[1], "son_gorulen": satir[2]}
+
+
+def strava_son_gorulen_guncelle(kullanici_id, aktivite_id):
+    if not DATABASE_URL:
+        return
+    baglanti = psycopg2.connect(DATABASE_URL)
+    baglanti.autocommit = True
+    imlec = baglanti.cursor()
+    imlec.execute(
+        "UPDATE strava_baglantilar SET son_gorulen_aktivite_id = %s WHERE kullanici_id = %s",
+        (aktivite_id, kullanici_id),
+    )
+    imlec.close()
+    baglanti.close()
+
+
+def strava_erisim_tokeni_al(refresh_token):
+    """refresh_token'dan (kalıcı) taze bir access_token (6 saatlik) üretir."""
+    yanit = requests.post(
+        "https://www.strava.com/oauth/token",
+        data={
+            "client_id": STRAVA_CLIENT_ID,
+            "client_secret": STRAVA_CLIENT_SECRET,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        },
+        timeout=15,
+    )
+    yanit.raise_for_status()
+    return yanit.json()["access_token"]
+
+
+def strava_son_aktiviteleri_getir(access_token, kac_tane=5):
+    yanit = requests.get(
+        "https://www.strava.com/api/v3/athlete/activities",
+        headers={"Authorization": f"Bearer {access_token}"},
+        params={"per_page": kac_tane},
+        timeout=15,
+    )
+    yanit.raise_for_status()
+    return yanit.json()
+
+
+def strava_aktiviteyi_metne_cevir(aktivite):
+    isim = aktivite.get("name", "Aktivite")
+    tur = aktivite.get("type", "")
+    mesafe_km = (aktivite.get("distance", 0) or 0) / 1000
+    sure_dk = (aktivite.get("moving_time", 0) or 0) / 60
+    ort_nabiz = aktivite.get("average_heartrate")
+    yukseklik = aktivite.get("total_elevation_gain")
+    tarih = aktivite.get("start_date_local", "")
+
+    satirlar = [f"Aktivite: {isim} ({tur})", f"Tarih: {tarih}",
+                f"Mesafe: {mesafe_km:.2f} km", f"Süre: {sure_dk:.0f} dakika"]
+    if ort_nabiz:
+        satirlar.append(f"Ortalama nabız: {ort_nabiz:.0f}")
+    if yukseklik:
+        satirlar.append(f"Toplam tırmanış: {yukseklik:.0f} m")
+    return "\n".join(satirlar)
 
 
 # ============== TARİH/SAAT ==============
@@ -618,6 +721,115 @@ async def web_sohbetlerini_getir(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(f"Aktarma sırasında hata oluştu: {e}")
 
 
+async def strava_baglan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kullanım: /strava_baglan <refresh_token>
+    Her kullanıcı KENDİ Strava hesabını, kendi refresh_token'ıyla bağlar —
+    böylece hesaplar birbirine karışmaz, herkesin verisi kendine özel kalır."""
+    if not context.args:
+        await update.message.reply_text(
+            "Kullanım: /strava_baglan <refresh_token>\n\n"
+            "Kendi Strava hesabını bağlamak için:\n"
+            "1) strava.com/settings/api adresinden bir uygulama oluştur\n"
+            "2) Bana Client ID ve Secret'ı gönder, sana yetkilendirme linki hazırlayayım\n"
+            "3) O linkten aldığın kodu bana ilet, refresh_token üreteyim\n"
+            "4) O refresh_token'ı bu komutla kaydet"
+        )
+        return
+
+    refresh_token = context.args[0]
+    kullanici_id = update.effective_user.id
+
+    try:
+        access_token = strava_erisim_tokeni_al(refresh_token)
+        aktiviteler = strava_son_aktiviteleri_getir(access_token, kac_tane=1)
+        athlete_id = None
+        strava_baglantisini_kaydet(kullanici_id, refresh_token, athlete_id)
+        if aktiviteler:
+            strava_son_gorulen_guncelle(kullanici_id, aktiviteler[0]["id"])
+        await update.message.reply_text(
+            "✅ Strava hesabın başarıyla bağlandı! Artık antrenmanlarını görebiliyorum. "
+            "Yeni bir aktivite bitirdiğinde sana otomatik haber vereceğim."
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Bağlantı başarısız: {e}")
+
+
+async def son_antrenman(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kullanici_id = update.effective_user.id
+    baglanti_bilgisi = strava_baglantisini_getir(kullanici_id)
+    if not baglanti_bilgisi:
+        await update.message.reply_text(
+            "Strava hesabın bağlı değil. Bağlamak için /strava_baglan yaz."
+        )
+        return
+
+    try:
+        access_token = strava_erisim_tokeni_al(baglanti_bilgisi["refresh_token"])
+        aktiviteler = strava_son_aktiviteleri_getir(access_token, kac_tane=1)
+        if not aktiviteler:
+            await update.message.reply_text("Henüz hiç aktivite bulamadım.")
+            return
+
+        aktivite_metni = strava_aktiviteyi_metne_cevir(aktiviteler[0])
+        client_gemini, koleksiyon = istemcileri_al()
+        yumusak = yumusak_ton_mu(kullanici_id)
+
+        soru = f"Az önce bitirdiğim antrenmanı yorumlar mısın?\n\n{aktivite_metni}"
+        bulunan = koleksiyon.query(query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
+        baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
+        gecmis = gecmisi_oku(kullanici_id)
+        cevap = cevap_uret(client_gemini, soru, baglam, gecmis, yumusak=yumusak)
+
+        mesaji_kaydet(kullanici_id, "user", soru)
+        mesaji_kaydet(kullanici_id, "model", cevap)
+        await update.message.reply_text(cevap)
+    except Exception as e:
+        await update.message.reply_text(f"Antrenman getirilirken hata: {e}")
+
+
+async def strava_kontrol_isi(context: ContextTypes.DEFAULT_TYPE):
+    """Periyodik olarak (JobQueue ile) her bağlı kullanıcının yeni bir
+    Strava aktivitesi olup olmadığını kontrol eder, varsa OTOMATİK
+    olarak SADECE O KULLANICIYA yorum gönderir — başkasına gitmez."""
+    if not DATABASE_URL:
+        return
+    try:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        imlec = baglanti.cursor()
+        imlec.execute("SELECT kullanici_id, refresh_token, son_gorulen_aktivite_id FROM strava_baglantilar")
+        tum_baglantilar = imlec.fetchall()
+        imlec.close()
+        baglanti.close()
+    except Exception:
+        return
+
+    client_gemini, koleksiyon = istemcileri_al()
+
+    for kullanici_id, refresh_token, son_gorulen in tum_baglantilar:
+        try:
+            access_token = strava_erisim_tokeni_al(refresh_token)
+            aktiviteler = strava_son_aktiviteleri_getir(access_token, kac_tane=3)
+            for aktivite in reversed(aktiviteler):
+                if aktivite["id"] <= (son_gorulen or 0):
+                    continue
+
+                aktivite_metni = strava_aktiviteyi_metne_cevir(aktivite)
+                yumusak = yumusak_ton_mu(kullanici_id)
+                soru = f"Az önce şu antrenmanı bitirdim, yorumlar mısın?\n\n{aktivite_metni}"
+                bulunan = koleksiyon.query(query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
+                baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
+                gecmis = gecmisi_oku(kullanici_id)
+                cevap = cevap_uret(client_gemini, soru, baglam, gecmis, yumusak=yumusak)
+
+                mesaji_kaydet(kullanici_id, "user", soru)
+                mesaji_kaydet(kullanici_id, "model", cevap)
+
+                await context.bot.send_message(chat_id=kullanici_id, text=f"🏃 Yeni antrenman algılandı!\n\n{cevap}")
+                strava_son_gorulen_guncelle(kullanici_id, aktivite["id"])
+        except Exception as e:
+            print(f"Strava kontrol hatası (kullanıcı {kullanici_id}): {e}")
+
+
 async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None):
     client_gemini, koleksiyon = istemcileri_al()
     kullanici_id = update.effective_user.id
@@ -786,11 +998,18 @@ def main():
     app.add_handler(CommandHandler("yumusak_kapat", yumusak_kapat))
     app.add_handler(CommandHandler("temizle", temizle))
     app.add_handler(CommandHandler("web_sohbetlerini_getir", web_sohbetlerini_getir))
+    app.add_handler(CommandHandler("strava_baglan", strava_baglan))
+    app.add_handler(CommandHandler("son_antrenman", son_antrenman))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_geldi))
     app.add_handler(MessageHandler(filters.VOICE, ses_geldi))
     app.add_handler(MessageHandler(filters.PHOTO, foto_geldi))
     app.add_handler(MessageHandler(filters.Document.ALL, belge_geldi))
     app.add_handler(CallbackQueryHandler(buton_tiklandi))
+
+    # Her 15 dakikada bir, tüm bağlı kullanıcıların yeni Strava aktivitesi
+    # olup olmadığını kontrol eder — her kullanıcıya SADECE KENDİ verisi gider.
+    if app.job_queue:
+        app.job_queue.run_repeating(strava_kontrol_isi, interval=900, first=30)
 
     print(f"{UYGULAMA_ADI} Telegram botu başlıyor...")
     app.run_polling()
