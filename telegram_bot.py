@@ -228,6 +228,31 @@ def _basit_semayi_hazirla():
         print(f"Tablo hazırlanırken hata: {e}")
 
 
+def _gecmis_tarih_etiketi(zaman):
+    """Bir geçmiş mesajın, BUGÜNE göre kaç gün önce olduğunu Türkçe
+    etiketler — böylece model 'dün konuştuğumuz şey' ile 'bugün
+    konuştuğumuz şey'i birbirinden ayırt edebilir."""
+    try:
+        from zoneinfo import ZoneInfo
+        if zaman.tzinfo is None:
+            zaman_tr = zaman.replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("Europe/Istanbul"))
+        else:
+            zaman_tr = zaman.astimezone(ZoneInfo("Europe/Istanbul"))
+    except Exception:
+        zaman_tr = zaman
+
+    bugun = _turkiye_simdi().date()
+    fark = (bugun - zaman_tr.date()).days
+    saat_str = zaman_tr.strftime("%H:%M")
+
+    if fark <= 0:
+        return f"BUGÜN, saat {saat_str}"
+    elif fark == 1:
+        return f"DÜN, saat {saat_str}"
+    else:
+        return f"{fark} gün önce ({zaman_tr.day} {AYLAR_TR[zaman_tr.month - 1]}), saat {saat_str}"
+
+
 def gecmisi_oku(kullanici_id, limit=40):
     if not DATABASE_URL:
         return []
@@ -235,7 +260,7 @@ def gecmisi_oku(kullanici_id, limit=40):
         baglanti = psycopg2.connect(DATABASE_URL)
         imlec = baglanti.cursor()
         imlec.execute(
-            "SELECT rol, icerik FROM ("
+            "SELECT rol, icerik, zaman FROM ("
             "  SELECT rol, icerik, zaman FROM tg_mesajlar "
             "  WHERE kullanici_id = %s ORDER BY zaman DESC LIMIT %s"
             ") alt ORDER BY zaman ASC",
@@ -244,7 +269,12 @@ def gecmisi_oku(kullanici_id, limit=40):
         satirlar = imlec.fetchall()
         imlec.close()
         baglanti.close()
-        return [{"role": r, "parts": [{"text": i}]} for r, i in satirlar]
+        sonuc = []
+        for rol, icerik, zaman in satirlar:
+            etiket = _gecmis_tarih_etiketi(zaman)
+            icerik_etiketli = f"[{etiket}] {icerik}"
+            sonuc.append({"role": rol, "parts": [{"text": icerik_etiketli}]})
+        return sonuc
     except Exception as e:
         print(f"Geçmiş okunurken hata: {e}")
         return []
@@ -474,6 +504,24 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
         "etiketli notlar BAŞKA insanların kendi hikayeleri — bunları asla "
         "kullanıcının kendi hikayesiymiş gibi anlatma. Bilmiyorsan dürüstçe "
         "söyle, asla kişisel veri uydurma.\n\n"
+        "🚨 TARİH ALGISI KURALI: Aşağıdaki ÖNCEKİ MESAJLAR'ın her birinin "
+        "başında [BUGÜN, saat ...] / [DÜN, saat ...] / [X gün önce (...), "
+        "saat ...] şeklinde bir zaman etiketi var. Bu etiketleri MUTLAKA "
+        "dikkate al: 'DÜN' ya da 'X gün önce' etiketli bir mesajda geçen "
+        "bir olayı (örn. 'bugün doğum günüm', 'bugün dinleniyorum' gibi) "
+        "ASLA şu anki 'bugün'müş gibi ele alma — o, o GÜNÜN 'bugünü' idi, "
+        "senin şu anki BUGÜN'ün değil. Sadece gerçekten [BUGÜN] etiketli "
+        "mesajlardaki bilgi, gerçek zamanlı bugünü yansıtır.\n\n"
+        "🚨 SPESİFİK PROGRAM/İÇERİK UYDURMA KURALI: Kullanıcı belirli bir "
+        "kanalın/kişinin/programın (örn. 'Asla Durma'nın 8 haftalık "
+        "programı') TAM İÇERİĞİNİ, hafta hafta/gün gün yapısını sorduğunda: "
+        "Bu detayları SADECE sana verilen notlarda GERÇEKTEN yazıyorsa "
+        "kullan. Notlarda yoksa, kendi genel spor bilgini kullanarak "
+        "'muhtemelen böyle olabilir, tipik bir yapı şöyledir' diye GENEL "
+        "bir çerçeve sunabilirsin AMA bunu o programın 'kesin, doğrulanmış "
+        "içeriğiymiş' gibi sunma — belirsizliği açıkça belirt (örn. 'tam "
+        "dakikaları elimde yok ama genel mantık şöyle işler' gibi). Kesin "
+        "biliyormuş gibi uydurma sayılar/haftalar vermek yasak.\n\n"
         f"Bugünün tarihi: {bugun}. Şu anki saat: {saat} ({vakit}). Bu bilgiyi "
         f"antrenman/beslenme önerilerinde dikkate al.\n\n"
         "Sen benim kişisel hybrid antrenörümsün. Amacın, beni hybrid "
@@ -910,13 +958,68 @@ async def buton_tiklandi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def _md_dosyasini_isle(update: Update, context: ContextTypes.DEFAULT_TYPE, belge):
+    """Bir video transkripti (.md) dosyasını doğrudan canlı ChromaDB
+    arşivine ekler — zip yükleme/redeploy derdi olmadan, anında."""
+    dosya = await context.bot.get_file(belge.file_id)
+    icerik_bytes = bytes(await dosya.download_as_bytearray())
+    try:
+        metin = icerik_bytes.decode("utf-8")
+    except Exception as e:
+        await update.message.reply_text(f"Dosya okunamadı: {e}")
+        return
+
+    if len(metin.strip()) < 50:
+        await update.message.reply_text("Dosya çok kısa/boş görünüyor, atlandı.")
+        return
+
+    # "# Video Linki: https://youtube.com/watch?v=XXXX" satırından video_id çıkar
+    video_id = belge.file_name.replace(".md", "")
+    eslesme = re.search(r"watch\?v=([\w-]+)", metin)
+    if eslesme:
+        video_id = eslesme.group(1)
+
+    try:
+        _, koleksiyon = istemcileri_al()
+
+        boyut, ortusme = 800, 150
+        parcalar, baslangic = [], 0
+        while baslangic < len(metin):
+            parcalar.append(metin[baslangic:baslangic + boyut])
+            baslangic += (boyut - ortusme)
+
+        # Bu video daha önce eklenmişse eski kayıtlarını temizle (tekrar etmesin)
+        try:
+            eski = koleksiyon.get(where={"video_id": video_id}, include=[])
+            if eski.get("ids"):
+                koleksiyon.delete(ids=eski["ids"])
+        except Exception:
+            pass
+
+        ids = [f"{video_id}_parca_{j}" for j in range(len(parcalar))]
+        metadatalar = [{"video_id": video_id, "kaynak": belge.file_name} for _ in parcalar]
+        koleksiyon.add(documents=parcalar, ids=ids, metadatas=metadatalar)
+
+        await update.message.reply_text(
+            f"✅ '{video_id}' videosu canlı arşive eklendi ({len(parcalar)} parça). "
+            f"Artık bu içerikten sorular sorabilirsin."
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Arşive eklenirken hata oluştu: {e}")
+
+
 async def belge_geldi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Eski sohbet .json dosyası gönderildiğinde: hem arşive (ChromaDB)
-    hem de gerçek konuşma geçmişine (tg_mesajlar) ekler."""
+    """.json (eski sohbet) ya da .md (video transkripti) dosyası
+    gönderildiğinde: doğrudan canlı arşive (ChromaDB) ekler."""
     belge = update.message.document
+
+    if belge.file_name.endswith(".md"):
+        await _md_dosyasini_isle(update, context, belge)
+        return
+
     if not belge.file_name.endswith(".json"):
         await update.message.reply_text(
-            "Şu an sadece .json (eski sohbet dosyası) kabul ediyorum."
+            "Şu an .json (eski sohbet) ya da .md (video transkripti) dosyası kabul ediyorum."
         )
         return
 
