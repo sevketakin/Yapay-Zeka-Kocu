@@ -431,6 +431,61 @@ def strava_aktiviteyi_metne_cevir(aktivite):
     return "\n".join(satirlar)
 
 
+def _pace_hesapla(mesafe_km, sure_dk):
+    if not mesafe_km or mesafe_km <= 0:
+        return None
+    pace_dk_km = sure_dk / mesafe_km
+    dk = int(pace_dk_km)
+    sn = int(round((pace_dk_km - dk) * 60))
+    return f"{dk}:{sn:02d} dk/km"
+
+
+def strava_kosu_pace_ozeti(access_token, kac_tane=8):
+    """Son koşularının pace (tempo) verilerini özetler — antrenman
+    önerilerinde 'gerçek pace'ine göre' konuşabilmek için kullanılır."""
+    aktiviteler = strava_son_aktiviteleri_getir(access_token, kac_tane=30)
+    kosular = [a for a in aktiviteler if a.get("type") in ("Run", "TrailRun", "VirtualRun")][:kac_tane]
+    if not kosular:
+        return ""
+
+    satirlar = ["Son koşularımın pace (tempo) verileri:"]
+    tum_pace_degerleri = []
+    for a in kosular:
+        mesafe_km = (a.get("distance", 0) or 0) / 1000
+        sure_dk = (a.get("moving_time", 0) or 0) / 60
+        pace = _pace_hesapla(mesafe_km, sure_dk)
+        ort_nabiz = a.get("average_heartrate")
+        tarih = (a.get("start_date_local", "") or "")[:10]
+        if pace:
+            satir = f"- {tarih}: {mesafe_km:.1f} km, pace {pace}"
+            if ort_nabiz:
+                satir += f", ort. nabız {ort_nabiz:.0f}"
+            satirlar.append(satir)
+            tum_pace_degerleri.append(sure_dk / mesafe_km if mesafe_km else None)
+
+    gecerli_paceler = [p for p in tum_pace_degerleri if p]
+    if gecerli_paceler:
+        ort_pace = sum(gecerli_paceler) / len(gecerli_paceler)
+        en_iyi_pace = min(gecerli_paceler)
+        dk_ort, sn_ort = int(ort_pace), int(round((ort_pace - int(ort_pace)) * 60))
+        dk_iyi, sn_iyi = int(en_iyi_pace), int(round((en_iyi_pace - int(en_iyi_pace)) * 60))
+        satirlar.append(f"\nOrtalama pace: {dk_ort}:{sn_ort:02d} dk/km")
+        satirlar.append(f"En iyi (en hızlı) pace: {dk_iyi}:{sn_iyi:02d} dk/km")
+
+    return "\n".join(satirlar)
+
+
+_KOSU_ANAHTAR_KELIMELER = [
+    "pace", "tempo", "interval", "koşu hız", "km/saat", "dakika/km",
+    "dk/km", "hangi hızla", "ne hızla", "koşu antrenman",
+]
+
+
+def _kosu_sorusu_mu(soru):
+    soru_kucuk = soru.lower()
+    return any(k in soru_kucuk for k in _KOSU_ANAHTAR_KELIMELER)
+
+
 # ============== KALICI KULLANICI PROFİLİ ==============
 def profili_oku(kullanici_id):
     if not DATABASE_URL:
@@ -598,6 +653,18 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
         "birbirleriyle ÇELİŞİYORSA, bunu görmezden gelip birini seçme — "
         "kısaca 'bazı kaynaklar şöyle diyor, bazıları böyle' diye açık "
         "şekilde belirt, sonra kendi önerini sun.\n\n"
+        "🚨 PACE/TEMPO/HIZ ÖNERİLERİNDE GERÇEK VERİYE DAYAN — GENEL VARSAYIM "
+        "YAPMA: Eğer sana '[GERÇEK STRAVA VERİSİ ...]' etiketli, kullanıcının "
+        "GERÇEK koşu pace verileri verilmişse, önerini KESİNLİKLE bu gerçek "
+        "sayılara dayandır (örn. 'ortalama pace'in 6:30 dk/km, bugünkü "
+        "interval için bunun biraz altında, 6:00 dk/km hedefleyelim' gibi). "
+        "ASLA kilo/boy/genel fiziksel özelliklerden yola çıkarak "
+        "('100 kg birisin, muhtemelen bu hızda koşarsın' gibi) GENEL VE "
+        "SOYUT bir pace tahmini uydurma — bu, elindeki gerçek veriyi göz "
+        "ardı edip tembel bir varsayımla konuşmak demektir, YASAK. Gerçek "
+        "veri yoksa (Strava bağlı değilse ya da hiç koşu verisi yoksa), "
+        "bunu açıkça söyle ve kullanıcıdan mevcut pace'ini/hissini sor — "
+        "yine de kilo bazlı genel bir tahmin uydurma.\n\n"
         f"{profil_blogu}"
         f"Bugünün tarihi: {bugun}. Şu anki saat: {saat} ({vakit}). Bu bilgiyi "
         f"antrenman/beslenme önerilerinde dikkate al.\n\n"
@@ -1228,6 +1295,23 @@ async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None)
                 ) + baglam
         except Exception:
             pass
+
+    # Soru pace/tempo/interval ile ilgiliyse, Strava bağlıysa gerçek pace
+    # verilerini OTOMATİK olarak çekip bağlama ekle — kullanıcının ayrıca
+    # /strava_ozet çalıştırmasına gerek kalmadan.
+    if _kosu_sorusu_mu(soru):
+        baglanti_bilgisi = strava_baglantisini_getir(kullanici_id)
+        if baglanti_bilgisi:
+            try:
+                erisim_tokeni = strava_erisim_tokeni_al(baglanti_bilgisi["refresh_token"])
+                pace_ozeti = strava_kosu_pace_ozeti(erisim_tokeni)
+                if pace_ozeti:
+                    baglam = (
+                        f"[GERÇEK STRAVA VERİSİ — kullanıcının son koşularının gerçek pace "
+                        f"değerleri, öneri verirken buna dayan]\n{pace_ozeti}\n\n---\n\n"
+                    ) + baglam
+            except Exception:
+                pass
 
     gecmis = gecmisi_oku(kullanici_id)
     profil = profili_oku(kullanici_id)
