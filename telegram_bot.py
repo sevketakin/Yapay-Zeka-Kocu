@@ -53,7 +53,7 @@ GEMINI_MODEL_LISTESI = [
     "gemini-3.1-flash-lite",
     "gemini-3-flash-preview",
 ]
-KAC_PARCA_GETIRILSIN = 15
+KAC_PARCA_GETIRILSIN = 25
 UYGULAMA_ADI = "Koçum"
 
 STRAVA_CLIENT_ID = os.environ.get("STRAVA_CLIENT_ID", "")
@@ -917,6 +917,19 @@ async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None)
     if bulunan['documents'][0]:
         baglam, kaynaklar = baglami_hazirla(bulunan)
 
+    zorla_video_id = context.user_data.get("zorla_video")
+    if zorla_video_id:
+        try:
+            zorla_sonuc = koleksiyon.get(where={"video_id": zorla_video_id})
+            if zorla_sonuc and zorla_sonuc.get("documents"):
+                zorla_metin = "\n\n".join(zorla_sonuc["documents"])
+                baglam = (
+                    f"[ÖNEMLİ — kullanıcı bu videoyu özellikle belirtti, "
+                    f"MUTLAKA dikkate al: {zorla_video_id}]\n{zorla_metin}\n\n---\n\n"
+                ) + baglam
+        except Exception:
+            pass
+
     gecmis = gecmisi_oku(kullanici_id)
     cevap = cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64, gorsel_mime, yumusak)
 
@@ -930,6 +943,36 @@ async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None)
          InlineKeyboardButton("📊 Excel Yap", callback_data="excel")],
     ])
     await update.message.reply_text(cevap, reply_markup=dugmeler)
+
+
+async def zorla_video_ayarla(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kullanım: /zorla_video <video_id_veya_link> — bu videoyu bundan
+    sonraki TÜM sorularında garanti olarak dikkate alır (arama şansına
+    bırakmaz). Kapatmak için: /zorla_video kapat"""
+    if not context.args:
+        mevcut = context.user_data.get("zorla_video")
+        await update.message.reply_text(
+            f"Şu an aktif: {mevcut}" if mevcut else
+            "Kullanım: /zorla_video <video_id_veya_link>\nKapatmak için: /zorla_video kapat"
+        )
+        return
+
+    girdi = context.args[0]
+    if girdi.lower() == "kapat":
+        context.user_data.pop("zorla_video", None)
+        await update.message.reply_text("Zorla video kapatıldı, normal aramaya döndük.")
+        return
+
+    video_id = girdi
+    eslesme = re.search(r"watch\?v=([\w-]+)", girdi)
+    if eslesme:
+        video_id = eslesme.group(1)
+
+    context.user_data["zorla_video"] = video_id
+    await update.message.reply_text(
+        f"Tamamdır, '{video_id}' videosunu bundan sonraki sorularında garanti "
+        f"olarak dikkate alacağım. Kapatmak için: /zorla_video kapat"
+    )
 
 
 async def mesaj_geldi(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1133,6 +1176,7 @@ def main():
     app.add_handler(CommandHandler("strava_baglan", strava_baglan))
     app.add_handler(CommandHandler("son_antrenman", son_antrenman))
     app.add_handler(CommandHandler("video_var_mi", video_var_mi))
+    app.add_handler(CommandHandler("zorla_video", zorla_video_ayarla))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_geldi))
     app.add_handler(MessageHandler(filters.VOICE, ses_geldi))
     app.add_handler(MessageHandler(filters.PHOTO, foto_geldi))
