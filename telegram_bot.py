@@ -802,6 +802,35 @@ async def strava_baglan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Bağlantı başarısız: {e}")
 
 
+async def video_var_mi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kullanım: /video_var_mi <video_id_veya_link>
+    Bir videonun gerçekten arşivde (ChromaDB'de) olup olmadığını,
+    varsa kaç parçaya bölündüğünü ve içeriğinden bir önizlemeyi gösterir."""
+    if not context.args:
+        await update.message.reply_text("Kullanım: /video_var_mi <video_id_veya_link>")
+        return
+
+    girdi = context.args[0]
+    video_id = girdi
+    eslesme = re.search(r"watch\?v=([\w-]+)", girdi)
+    if eslesme:
+        video_id = eslesme.group(1)
+
+    try:
+        _, koleksiyon = istemcileri_al()
+        sonuc = koleksiyon.get(where={"video_id": video_id})
+        if not sonuc.get("ids"):
+            await update.message.reply_text(f"❌ '{video_id}' arşivde bulunamadı.")
+            return
+        onizleme = sonuc["documents"][0][:300] if sonuc.get("documents") else ""
+        await update.message.reply_text(
+            f"✅ '{video_id}' arşivde var! ({len(sonuc['ids'])} parça)\n\n"
+            f"İçerik önizlemesi:\n{onizleme}..."
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Kontrol sırasında hata: {e}")
+
+
 async def son_antrenman(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kullanici_id = update.effective_user.id
     baglanti_bilgisi = strava_baglantisini_getir(kullanici_id)
@@ -1103,6 +1132,7 @@ def main():
     app.add_handler(CommandHandler("web_sohbetlerini_getir", web_sohbetlerini_getir))
     app.add_handler(CommandHandler("strava_baglan", strava_baglan))
     app.add_handler(CommandHandler("son_antrenman", son_antrenman))
+    app.add_handler(CommandHandler("video_var_mi", video_var_mi))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_geldi))
     app.add_handler(MessageHandler(filters.VOICE, ses_geldi))
     app.add_handler(MessageHandler(filters.PHOTO, foto_geldi))
