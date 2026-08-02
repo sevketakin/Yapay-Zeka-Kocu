@@ -812,6 +812,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Eski sohbet (.json) ya da video transkripti (.md) dosyalarını da "
         f"gönderip arşive ekleyebilirsin.\n\n"
         f"📋 Profil:\n"
+        f"/profil_olustur — birkaç soruyla tam profil oluştur (ÖNERİLİR)\n"
         f"/profil_goster — hakkında bildiklerim\n"
         f"/profil_ekle <bilgi> — kalıcı bir bilgi ekle\n"
         f"/profil_sil — profili sıfırla\n\n"
@@ -892,6 +893,74 @@ async def profil_sil(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kullanici_id = update.effective_user.id
     profili_yaz(kullanici_id, "")
     await update.message.reply_text("Profilin sıfırlandı.")
+
+
+# ============== PROFİL OLUŞTURMA (SORU-CEVAP AKIŞI) ==============
+PROFIL_SORULARI = [
+    ("yas", "Kaç yaşındasın?"),
+    ("boy_kilo", "Boyun (cm) ve kilon (kg) nedir? (örn: 180 cm, 85 kg)"),
+    ("hedef", "Ana hedefin ne? (örn: kilo vermek, kas kazanmak, bir yarışa hazırlanmak, genel fitness)"),
+    ("sakatlik", "Herhangi bir sakatlığın ya da fiziksel kısıtlaman var mı? Yoksa 'yok' yaz."),
+    ("deneyim", "Spor deneyim seviyeni nasıl tanımlarsın? (yeni başlayan / orta seviye / ileri seviye)"),
+    ("siklik", "Haftada kaç gün antrenman yapabiliyorsun, hangi günler müsaitsin?"),
+    ("ozel_hedef", "Ulaşmak istediğin özel bir hedef ya da yarış/tarih var mı? Yoksa 'yok' yaz."),
+]
+
+
+async def profil_olustur(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["profil_onboarding_index"] = 0
+    context.user_data["profil_onboarding_cevaplar"] = {}
+    await update.message.reply_text(
+        "Harika, sana en iyi koçluğu yapabilmem için birkaç soru soracağım. "
+        "İstediğin an /iptal yazarak durdurabilirsin.\n\n"
+        f"1/{len(PROFIL_SORULARI)}: {PROFIL_SORULARI[0][1]}"
+    )
+
+
+async def _onboarding_cevabini_isle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    index = context.user_data.get("profil_onboarding_index", 0)
+    anahtar, soru_metni = PROFIL_SORULARI[index]
+    context.user_data["profil_onboarding_cevaplar"][anahtar] = update.message.text
+
+    yeni_index = index + 1
+    if yeni_index < len(PROFIL_SORULARI):
+        context.user_data["profil_onboarding_index"] = yeni_index
+        await update.message.reply_text(
+            f"{yeni_index + 1}/{len(PROFIL_SORULARI)}: {PROFIL_SORULARI[yeni_index][1]}"
+        )
+        return
+
+    # Tüm sorular bitti — profili derleyip kaydet
+    cevaplar = context.user_data["profil_onboarding_cevaplar"]
+    kullanici_id = update.effective_user.id
+    profil_metni = (
+        f"- Yaş: {cevaplar.get('yas', '')}\n"
+        f"- Boy/Kilo: {cevaplar.get('boy_kilo', '')}\n"
+        f"- Ana hedef: {cevaplar.get('hedef', '')}\n"
+        f"- Sakatlık/kısıtlama: {cevaplar.get('sakatlik', '')}\n"
+        f"- Deneyim seviyesi: {cevaplar.get('deneyim', '')}\n"
+        f"- Antrenman sıklığı: {cevaplar.get('siklik', '')}\n"
+        f"- Özel hedef/yarış: {cevaplar.get('ozel_hedef', '')}"
+    )
+    profili_yaz(kullanici_id, profil_metni)
+
+    context.user_data.pop("profil_onboarding_index", None)
+    context.user_data.pop("profil_onboarding_cevaplar", None)
+
+    await update.message.reply_text(
+        f"✅ Profilin oluşturuldu, bundan sonra hep hatırlayacağım:\n\n{profil_metni}\n\n"
+        f"İstediğin zaman /profil_ekle ile yeni bilgi ekleyebilir, /profil_goster ile "
+        f"görebilir, /profil_olustur ile baştan yapabilirsin."
+    )
+
+
+async def profil_iptal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if "profil_onboarding_index" in context.user_data:
+        context.user_data.pop("profil_onboarding_index", None)
+        context.user_data.pop("profil_onboarding_cevaplar", None)
+        await update.message.reply_text("Profil oluşturma iptal edildi.")
+    else:
+        await update.message.reply_text("İptal edilecek aktif bir işlem yok.")
 
 
 async def sabah_ac(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1361,6 +1430,9 @@ async def zorla_video_ayarla(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def mesaj_geldi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if "profil_onboarding_index" in context.user_data:
+        await _onboarding_cevabini_isle(update, context)
+        return
     await _soruyu_isle(update, context, update.message.text)
 
 
@@ -1565,6 +1637,8 @@ def main():
     app.add_handler(CommandHandler("profil_goster", profil_goster))
     app.add_handler(CommandHandler("profil_ekle", profil_ekle))
     app.add_handler(CommandHandler("profil_sil", profil_sil))
+    app.add_handler(CommandHandler("profil_olustur", profil_olustur))
+    app.add_handler(CommandHandler("iptal", profil_iptal))
     app.add_handler(CommandHandler("strava_ozet", strava_ozet))
     app.add_handler(CommandHandler("sabah_ac", sabah_ac))
     app.add_handler(CommandHandler("sabah_kapat", sabah_kapat))
