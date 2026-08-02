@@ -220,6 +220,11 @@ def _basit_semayi_hazirla():
                 athlete_id BIGINT,
                 son_gorulen_aktivite_id BIGINT DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS kullanici_profil (
+                kullanici_id BIGINT PRIMARY KEY,
+                profil TEXT DEFAULT ''
+            );
+            ALTER TABLE tg_ayarlar ADD COLUMN IF NOT EXISTS sabah_mesaji BOOLEAN DEFAULT FALSE;
         """)
         imlec.close()
         baglanti.close()
@@ -426,6 +431,64 @@ def strava_aktiviteyi_metne_cevir(aktivite):
     return "\n".join(satirlar)
 
 
+# ============== KALICI KULLANICI PROFİLİ ==============
+def profili_oku(kullanici_id):
+    if not DATABASE_URL:
+        return ""
+    try:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        imlec = baglanti.cursor()
+        imlec.execute("SELECT profil FROM kullanici_profil WHERE kullanici_id = %s", (kullanici_id,))
+        satir = imlec.fetchone()
+        imlec.close()
+        baglanti.close()
+        return satir[0] if satir else ""
+    except Exception:
+        return ""
+
+
+def profili_yaz(kullanici_id, yeni_profil):
+    if not DATABASE_URL:
+        return
+    baglanti = psycopg2.connect(DATABASE_URL)
+    baglanti.autocommit = True
+    imlec = baglanti.cursor()
+    imlec.execute(
+        "INSERT INTO kullanici_profil (kullanici_id, profil) VALUES (%s, %s) "
+        "ON CONFLICT (kullanici_id) DO UPDATE SET profil = %s",
+        (kullanici_id, yeni_profil, yeni_profil),
+    )
+    imlec.close()
+    baglanti.close()
+
+
+def profili_otomatik_guncelle(client_gemini, kullanici_id, soru, cevap):
+    """Her konuşmadan sonra, kalıcı olarak hatırlanması gereken YENİ bir
+    bilgi (hedef, kilo, sakatlık, tercih vb.) geçip geçmediğini kontrol
+    eder, varsa profile ekler. Ucuz/hızlı bir model kullanır."""
+    mevcut_profil = profili_oku(kullanici_id)
+    talimat = (
+        "Aşağıda bir kullanıcı ile antrenörü arasındaki SON mesaj çifti var. "
+        "Kullanıcının MEVCUT PROFİLİ de altta. Eğer bu son mesajlarda, "
+        "profile eklenmeye değer YENİ ve KALICI bir kişisel bilgi geçiyorsa "
+        "(hedef, kilo, boy, yaş, sakatlık/kısıtlama, tercih, hedef yarış "
+        "tarihi vb. — GEÇİCİ/günlük şeyler değil) profili güncelleyip TAM "
+        "HALİNİ döndür. Yeni bir şey yoksa, SADECE 'DEĞİŞİKLİK_YOK' yaz. "
+        "Profil kısa, madde madde, Türkçe olmalı, 15 satırı geçmemeli.\n\n"
+        f"MEVCUT PROFİL:\n{mevcut_profil or '(henüz boş)'}\n\n"
+        f"SON MESAJLAR:\nKullanıcı: {soru}\nAntrenör: {cevap}"
+    )
+    try:
+        yanit = client_gemini.models.generate_content(
+            model="gemini-flash-latest", contents=talimat,
+        )
+        sonuc = (yanit.text or "").strip()
+        if sonuc and "DEĞİŞİKLİK_YOK" not in sonuc.upper():
+            profili_yaz(kullanici_id, sonuc)
+    except Exception as e:
+        print(f"Profil güncellenirken hata: {e}")
+
+
 # ============== TARİH/SAAT ==============
 def _turkiye_simdi():
     try:
@@ -481,7 +544,8 @@ def ses_yaziya_cevir(client_gemini, ses_bytes, mime_tipi="audio/ogg"):
 
 
 # ============== ANA CEVAP ÜRETME ==============
-def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime=None, yumusak=False):
+def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime=None,
+                yumusak=False, profil=""):
     bugun = bugunun_tarihi()
     saat, vakit = su_anki_saat()
 
@@ -493,17 +557,24 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
         "baskıcı/sert bir koç gibi değil, anlayışlı bir rehber gibi."
     )
 
+    profil_blogu = (
+        f"📋 KULLANICI HAKKINDA KALICI BİLGİLER (bunlar her zaman doğrudur, "
+        f"konuşma ne kadar eski olursa olsun unutma):\n{profil}\n\n"
+        if profil else ""
+    )
+
     sistem_mesaji = (
         "🚨 EN ÖNEMLİ KURAL — EN BAŞTA OKU VE HER ZAMAN UYGULA:\n"
         "Kullanıcı sana 'geçen hafta/gün ne yaptık', 'dün ne konuşmuştuk', "
         "'hatırlıyor musun', kaldırdığı ağırlıklar, koştuğu mesafeler gibi "
         "KENDİ KİŞİSEL geçmişiyle ilgili bir şey sorduğunda: SADECE ve "
         "SADECE aşağıda sana verilen gerçek konuşma geçmişinde (ÖNCEKİ "
-        "MESAJLAR) ya da '[GERÇEK KİŞİSEL GEÇMİŞ ...]' etiketli notlarda "
-        "GERÇEKTEN yazan bilgiyi kullan. '[Genel video içeriği ...]' "
-        "etiketli notlar BAŞKA insanların kendi hikayeleri — bunları asla "
-        "kullanıcının kendi hikayesiymiş gibi anlatma. Bilmiyorsan dürüstçe "
-        "söyle, asla kişisel veri uydurma.\n\n"
+        "MESAJLAR), '📋 KULLANICI HAKKINDA KALICI BİLGİLER' bölümünde ya da "
+        "'[GERÇEK KİŞİSEL GEÇMİŞ ...]' etiketli notlarda GERÇEKTEN yazan "
+        "bilgiyi kullan. '[Genel video içeriği ...]' etiketli notlar BAŞKA "
+        "insanların kendi hikayeleri — bunları asla kullanıcının kendi "
+        "hikayesiymiş gibi anlatma. Bilmiyorsan dürüstçe söyle, asla "
+        "kişisel veri uydurma.\n\n"
         "🚨 TARİH ALGISI KURALI: Aşağıdaki ÖNCEKİ MESAJLAR'ın her birinin "
         "başında [BUGÜN, saat ...] / [DÜN, saat ...] / [X gün önce (...), "
         "saat ...] şeklinde bir zaman etiketi var. Bu etiketleri MUTLAKA "
@@ -522,6 +593,12 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
         "içeriğiymiş' gibi sunma — belirsizliği açıkça belirt (örn. 'tam "
         "dakikaları elimde yok ama genel mantık şöyle işler' gibi). Kesin "
         "biliyormuş gibi uydurma sayılar/haftalar vermek yasak.\n\n"
+        "📌 FARKLI KAYNAK/KOÇ FARKINDALIĞI: Notlar arasında farklı "
+        "video_id'lerden (yani farklı kanallardan/koçlardan) gelen bilgiler "
+        "birbirleriyle ÇELİŞİYORSA, bunu görmezden gelip birini seçme — "
+        "kısaca 'bazı kaynaklar şöyle diyor, bazıları böyle' diye açık "
+        "şekilde belirt, sonra kendi önerini sun.\n\n"
+        f"{profil_blogu}"
         f"Bugünün tarihi: {bugun}. Şu anki saat: {saat} ({vakit}). Bu bilgiyi "
         f"antrenman/beslenme önerilerinde dikkate al.\n\n"
         "Sen benim kişisel hybrid antrenörümsün. Amacın, beni hybrid "
@@ -665,11 +742,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"Merhaba! Ben {UYGULAMA_ADI}, senin kişisel hybrid antrenörünüm. 💪\n\n"
         f"Yazarak, sesli mesajla ya da fotoğraf göndererek soru sorabilirsin. "
-        f"Eski sohbet dosyalarını (.json) da gönderip arşive/geçmişe ekleyebilirsin.\n\n"
+        f"Eski sohbet (.json) ya da video transkripti (.md) dosyalarını da "
+        f"gönderip arşive ekleyebilirsin.\n\n"
+        f"📋 Profil:\n"
+        f"/profil_goster — hakkında bildiklerim\n"
+        f"/profil_ekle <bilgi> — kalıcı bir bilgi ekle\n"
+        f"/profil_sil — profili sıfırla\n\n"
+        f"🏃 Strava:\n"
+        f"/strava_baglan <token> — hesabını bağla\n"
+        f"/son_antrenman — son aktiviteni yorumlat\n"
+        f"/strava_ozet [gün] — trend özeti (varsayılan 7 gün)\n\n"
+        f"☀️ Sabah mesajı:\n"
+        f"/sabah_ac — her sabah 07:00'de otomatik mesaj\n"
+        f"/sabah_kapat — kapat\n\n"
+        f"🔍 Arşiv araçları:\n"
+        f"/video_var_mi <id> — bir video arşivde var mı kontrol et\n"
+        f"/zorla_video <id> — bir videoyu garanti kullan\n\n"
+        f"⚙️ Genel:\n"
         f"/id — Telegram ID'ni gösterir\n"
-        f"/yumusak_ac — daha yumuşak bir ton iste\n"
-        f"/yumusak_kapat — normal tona dön\n"
-        f"/temizle — kendi sohbet geçmişini sıfırla"
+        f"/yumusak_ac, /yumusak_kapat — ton ayarı\n"
+        f"/temizle — sohbet geçmişini sıfırla\n"
+        f"/web_sohbetlerini_getir <email> — eski web sohbetlerini taşı"
     )
 
 
@@ -700,6 +793,117 @@ async def temizle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
     await update.message.reply_text("Sohbet geçmişin temizlendi, sıfırdan başlıyoruz.")
+
+
+async def profil_goster(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kullanici_id = update.effective_user.id
+    profil = profili_oku(kullanici_id)
+    if not profil:
+        await update.message.reply_text(
+            "Henüz kalıcı bir profil bilgin yok. Sohbet ettikçe otomatik "
+            "oluşacak, ya da /profil_ekle ile elle ekleyebilirsin."
+        )
+        return
+    await update.message.reply_text(f"📋 Senin hakkında bildiklerim:\n\n{profil}")
+
+
+async def profil_ekle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "Kullanım: /profil_ekle <bilgi>\nÖrn: /profil_ekle Sol dizimde eski bir sakatlık var, ağır squat yapamıyorum"
+        )
+        return
+    kullanici_id = update.effective_user.id
+    yeni_bilgi = " ".join(context.args)
+    mevcut = profili_oku(kullanici_id)
+    guncel = (mevcut + "\n- " + yeni_bilgi).strip() if mevcut else "- " + yeni_bilgi
+    profili_yaz(kullanici_id, guncel)
+    await update.message.reply_text("✅ Profiline eklendi, bundan sonra bunu hep hatırlayacağım.")
+
+
+async def profil_sil(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kullanici_id = update.effective_user.id
+    profili_yaz(kullanici_id, "")
+    await update.message.reply_text("Profilin sıfırlandı.")
+
+
+async def sabah_ac(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kullanici_id = update.effective_user.id
+    if DATABASE_URL:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        baglanti.autocommit = True
+        imlec = baglanti.cursor()
+        imlec.execute(
+            "INSERT INTO tg_ayarlar (kullanici_id, sabah_mesaji) VALUES (%s, TRUE) "
+            "ON CONFLICT (kullanici_id) DO UPDATE SET sabah_mesaji = TRUE",
+            (kullanici_id,),
+        )
+        imlec.close()
+        baglanti.close()
+    await update.message.reply_text("☀️ Tamamdır, her sabah 07:00'de sana otomatik bir mesaj göndereceğim.")
+
+
+async def sabah_kapat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kullanici_id = update.effective_user.id
+    if DATABASE_URL:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        baglanti.autocommit = True
+        imlec = baglanti.cursor()
+        imlec.execute(
+            "INSERT INTO tg_ayarlar (kullanici_id, sabah_mesaji) VALUES (%s, FALSE) "
+            "ON CONFLICT (kullanici_id) DO UPDATE SET sabah_mesaji = FALSE",
+            (kullanici_id,),
+        )
+        imlec.close()
+        baglanti.close()
+    await update.message.reply_text("Sabah mesajları kapatıldı.")
+
+
+async def sabah_mesaji_isi(context: ContextTypes.DEFAULT_TYPE):
+    """Her sabah 07:00'de (Türkiye saati), sabah mesajını açmış tüm
+    kullanıcılara KENDİ profillerine/verilerine göre kişisel bir
+    günaydın mesajı gönderir."""
+    if not DATABASE_URL:
+        return
+    try:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        imlec = baglanti.cursor()
+        imlec.execute("SELECT kullanici_id FROM tg_ayarlar WHERE sabah_mesaji = TRUE")
+        kullanicilar = [r[0] for r in imlec.fetchall()]
+        imlec.close()
+        baglanti.close()
+    except Exception:
+        return
+
+    client_gemini, koleksiyon = istemcileri_al()
+
+    for kullanici_id in kullanicilar:
+        try:
+            yumusak = yumusak_ton_mu(kullanici_id)
+            profil = profili_oku(kullanici_id)
+            gecmis = gecmisi_oku(kullanici_id, limit=15)
+
+            strava_ozeti = ""
+            baglanti_bilgisi = strava_baglantisini_getir(kullanici_id)
+            if baglanti_bilgisi:
+                try:
+                    access_token = strava_erisim_tokeni_al(baglanti_bilgisi["refresh_token"])
+                    son_aktiviteler = strava_son_aktiviteleri_getir(access_token, kac_tane=1)
+                    if son_aktiviteler:
+                        strava_ozeti = f"\n\nEn son aktivitem:\n{strava_aktiviteyi_metne_cevir(son_aktiviteler[0])}"
+                except Exception:
+                    pass
+
+            soru = f"Günaydın koç! Bugün için bana kısa bir motivasyon ve gün planı önerir misin?{strava_ozeti}"
+            bulunan = koleksiyon.query(query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
+            baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
+            cevap = cevap_uret(client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=profil)
+
+            mesaji_kaydet(kullanici_id, "user", soru)
+            mesaji_kaydet(kullanici_id, "model", cevap)
+            await context.bot.send_message(chat_id=kullanici_id, text=f"☀️ Günaydın!\n\n{cevap}")
+        except Exception as e:
+            print(f"Sabah mesajı hatası (kullanıcı {kullanici_id}): {e}")
 
 
 async def web_sohbetlerini_getir(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -864,6 +1068,72 @@ async def son_antrenman(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Antrenman getirilirken hata: {e}")
 
 
+async def strava_ozet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kullanım: /strava_ozet [gun_sayisi] — varsayılan son 7 gün.
+    Toplam mesafe, süre, aktivite sayısı gibi TREND bilgisini özetler."""
+    kullanici_id = update.effective_user.id
+    baglanti_bilgisi = strava_baglantisini_getir(kullanici_id)
+    if not baglanti_bilgisi:
+        await update.message.reply_text("Strava hesabın bağlı değil. Bağlamak için /strava_baglan yaz.")
+        return
+
+    gun_sayisi = 7
+    if context.args:
+        try:
+            gun_sayisi = int(context.args[0])
+        except ValueError:
+            pass
+
+    try:
+        access_token = strava_erisim_tokeni_al(baglanti_bilgisi["refresh_token"])
+        aktiviteler = strava_son_aktiviteleri_getir(access_token, kac_tane=100)
+
+        esik_tarih = datetime.now() - timedelta(days=gun_sayisi)
+        secilenler = []
+        for a in aktiviteler:
+            try:
+                a_tarih = datetime.fromisoformat(a["start_date_local"].replace("Z", ""))
+                if a_tarih >= esik_tarih:
+                    secilenler.append(a)
+            except Exception:
+                continue
+
+        if not secilenler:
+            await update.message.reply_text(f"Son {gun_sayisi} günde hiç aktivite bulamadım.")
+            return
+
+        toplam_mesafe = sum((a.get("distance", 0) or 0) for a in secilenler) / 1000
+        toplam_sure = sum((a.get("moving_time", 0) or 0) for a in secilenler) / 60
+        toplam_tirmanis = sum((a.get("total_elevation_gain", 0) or 0) for a in secilenler)
+        tur_sayisi = {}
+        for a in secilenler:
+            tur_sayisi[a.get("type", "?")] = tur_sayisi.get(a.get("type", "?"), 0) + 1
+
+        ozet_metni = (
+            f"Son {gun_sayisi} gün özeti:\n"
+            f"- Toplam aktivite: {len(secilenler)}\n"
+            f"- Toplam mesafe: {toplam_mesafe:.1f} km\n"
+            f"- Toplam süre: {toplam_sure:.0f} dakika\n"
+            f"- Toplam tırmanış: {toplam_tirmanis:.0f} m\n"
+            f"- Türlere göre: {tur_sayisi}"
+        )
+
+        client_gemini, koleksiyon = istemcileri_al()
+        yumusak = yumusak_ton_mu(kullanici_id)
+        soru = f"Son {gun_sayisi} günlük antrenman verilerimi değerlendirir misin, trend olarak nasılım?\n\n{ozet_metni}"
+        bulunan = koleksiyon.query(query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
+        baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
+        gecmis = gecmisi_oku(kullanici_id)
+        profil = profili_oku(kullanici_id)
+        cevap = cevap_uret(client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=profil)
+
+        mesaji_kaydet(kullanici_id, "user", soru)
+        mesaji_kaydet(kullanici_id, "model", cevap)
+        await update.message.reply_text(cevap)
+    except Exception as e:
+        await update.message.reply_text(f"Özet oluşturulurken hata: {e}")
+
+
 async def strava_kontrol_isi(context: ContextTypes.DEFAULT_TYPE):
     """Periyodik olarak (JobQueue ile) her bağlı kullanıcının yeni bir
     Strava aktivitesi olup olmadığını kontrol eder, varsa OTOMATİK
@@ -907,12 +1177,41 @@ async def strava_kontrol_isi(context: ContextTypes.DEFAULT_TYPE):
             print(f"Strava kontrol hatası (kullanıcı {kullanici_id}): {e}")
 
 
+def _hybrid_arama(koleksiyon, soru, kac_tane):
+    """Normal anlamsal aramaya ek olarak, sorudaki net ifadeleri
+    (örn. '5. hafta', '3. gün') KELİME OLARAK da arar ve sonuçları
+    birleştirir. Bu, 'Zone 2' ya da 'X. hafta' gibi çok net ama
+    anlamsal aramanın bazen kaçırdığı ifadeleri yakalamayı sağlar."""
+    semantik = koleksiyon.query(query_texts=[soru], n_results=kac_tane)
+    dokumanlar = list(semantik['documents'][0]) if semantik['documents'][0] else []
+    metadatalar = list(semantik['metadatas'][0]) if semantik['metadatas'][0] else []
+    gorulen_idler = set(semantik['ids'][0]) if semantik.get('ids') and semantik['ids'][0] else set()
+
+    anahtar_ifadeler = re.findall(r"\d+\s*\.\s*(?:hafta|gün|hafta\w*|gün\w*)", soru, flags=re.IGNORECASE)
+    for ifade in anahtar_ifadeler[:2]:
+        try:
+            anahtar_sonuc = koleksiyon.get(
+                where_document={"$contains": ifade.strip()}, limit=5,
+            )
+            for i, doc_id in enumerate(anahtar_sonuc.get("ids", [])):
+                if doc_id not in gorulen_idler:
+                    gorulen_idler.add(doc_id)
+                    dokumanlar.append(anahtar_sonuc["documents"][i])
+                    metadatalar.append(anahtar_sonuc["metadatas"][i])
+        except Exception:
+            continue
+
+    if not dokumanlar:
+        return {"documents": [[]], "metadatas": [[]]}
+    return {"documents": [dokumanlar], "metadatas": [metadatalar]}
+
+
 async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None):
     client_gemini, koleksiyon = istemcileri_al()
     kullanici_id = update.effective_user.id
     yumusak = yumusak_ton_mu(kullanici_id)
 
-    bulunan = koleksiyon.query(query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
+    bulunan = _hybrid_arama(koleksiyon, soru, KAC_PARCA_GETIRILSIN)
     baglam, kaynaklar = "", []
     if bulunan['documents'][0]:
         baglam, kaynaklar = baglami_hazirla(bulunan)
@@ -931,10 +1230,12 @@ async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None)
             pass
 
     gecmis = gecmisi_oku(kullanici_id)
-    cevap = cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64, gorsel_mime, yumusak)
+    profil = profili_oku(kullanici_id)
+    cevap = cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64, gorsel_mime, yumusak, profil)
 
     mesaji_kaydet(kullanici_id, "user", soru)
     mesaji_kaydet(kullanici_id, "model", cevap)
+    profili_otomatik_guncelle(client_gemini, kullanici_id, soru, cevap)
 
     context.chat_data["son_cevap"] = cevap
 
@@ -1177,6 +1478,12 @@ def main():
     app.add_handler(CommandHandler("son_antrenman", son_antrenman))
     app.add_handler(CommandHandler("video_var_mi", video_var_mi))
     app.add_handler(CommandHandler("zorla_video", zorla_video_ayarla))
+    app.add_handler(CommandHandler("profil_goster", profil_goster))
+    app.add_handler(CommandHandler("profil_ekle", profil_ekle))
+    app.add_handler(CommandHandler("profil_sil", profil_sil))
+    app.add_handler(CommandHandler("strava_ozet", strava_ozet))
+    app.add_handler(CommandHandler("sabah_ac", sabah_ac))
+    app.add_handler(CommandHandler("sabah_kapat", sabah_kapat))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_geldi))
     app.add_handler(MessageHandler(filters.VOICE, ses_geldi))
     app.add_handler(MessageHandler(filters.PHOTO, foto_geldi))
@@ -1187,6 +1494,17 @@ def main():
     # olup olmadığını kontrol eder — her kullanıcıya SADECE KENDİ verisi gider.
     if app.job_queue:
         app.job_queue.run_repeating(strava_kontrol_isi, interval=900, first=30)
+
+        # Her sabah 07:00'de (Türkiye saati), /sabah_ac demiş kullanıcılara
+        # otomatik, kişisel bir günaydın mesajı gönderir.
+        try:
+            from zoneinfo import ZoneInfo
+            from datetime import time as _time
+            app.job_queue.run_daily(
+                sabah_mesaji_isi, time=_time(7, 0, tzinfo=ZoneInfo("Europe/Istanbul")),
+            )
+        except Exception as e:
+            print(f"Sabah mesajı zamanlanamadı: {e}")
 
     print(f"{UYGULAMA_ADI} Telegram botu başlıyor...")
     app.run_polling()
