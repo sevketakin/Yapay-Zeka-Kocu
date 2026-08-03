@@ -224,7 +224,19 @@ def _basit_semayi_hazirla():
                 kullanici_id BIGINT PRIMARY KEY,
                 profil TEXT DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS vucut_olculeri (
+                id SERIAL PRIMARY KEY,
+                kullanici_id BIGINT NOT NULL,
+                tarih TIMESTAMP DEFAULT NOW(),
+                kilo TEXT,
+                kol TEXT,
+                bel TEXT,
+                kalca TEXT,
+                gogus TEXT,
+                bacak TEXT
+            );
             ALTER TABLE tg_ayarlar ADD COLUMN IF NOT EXISTS sabah_mesaji BOOLEAN DEFAULT FALSE;
+            ALTER TABLE tg_ayarlar ADD COLUMN IF NOT EXISTS olcum_hatirlatma BOOLEAN DEFAULT TRUE;
         """)
         imlec.close()
         baglanti.close()
@@ -816,6 +828,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/profil_goster — hakkında bildiklerim\n"
         f"/profil_ekle <bilgi> — kalıcı bir bilgi ekle\n"
         f"/profil_sil — profili sıfırla\n\n"
+        f"📏 Vücut ölçümleri:\n"
+        f"/olcum_ekle — ölçümlerini kaydet (kol, bel, kalça, göğüs, bacak, kilo)\n"
+        f"/olcum_gecmisi — geçmiş ölçümlerini gör\n"
+        f"/olcum_hatirlatma_ac, /olcum_hatirlatma_kapat — aylık hatırlatma\n\n"
         f"🏃 Strava:\n"
         f"/strava_baglan <token> — hesabını bağla\n"
         f"/son_antrenman — son aktiviteni yorumlat\n"
@@ -959,8 +975,238 @@ async def profil_iptal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("profil_onboarding_index", None)
         context.user_data.pop("profil_onboarding_cevaplar", None)
         await update.message.reply_text("Profil oluşturma iptal edildi.")
+    elif "olcum_onboarding_index" in context.user_data:
+        context.user_data.pop("olcum_onboarding_index", None)
+        context.user_data.pop("olcum_onboarding_cevaplar", None)
+        await update.message.reply_text("Ölçüm ekleme iptal edildi.")
     else:
         await update.message.reply_text("İptal edilecek aktif bir işlem yok.")
+
+
+# ============== VÜCUT ÖLÇÜMLERİ (AYLIK TAKİP) ==============
+OLCUM_SORULARI = [
+    ("kilo", "Kaç kg'sın?"),
+    ("kol", "Kol çevren kaç cm? (pazı, en kalın yerinden)"),
+    ("bel", "Bel çevren kaç cm?"),
+    ("kalca", "Kalça çevren kaç cm?"),
+    ("gogus", "Göğüs çevren kaç cm?"),
+    ("bacak", "Uyluk (bacak) çevren kaç cm?"),
+]
+
+
+def olcumu_kaydet(kullanici_id, cevaplar):
+    if not DATABASE_URL:
+        return
+    baglanti = psycopg2.connect(DATABASE_URL)
+    baglanti.autocommit = True
+    imlec = baglanti.cursor()
+    imlec.execute(
+        "INSERT INTO vucut_olculeri (kullanici_id, kilo, kol, bel, kalca, gogus, bacak) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        (kullanici_id, cevaplar.get("kilo"), cevaplar.get("kol"), cevaplar.get("bel"),
+         cevaplar.get("kalca"), cevaplar.get("gogus"), cevaplar.get("bacak")),
+    )
+    imlec.close()
+    baglanti.close()
+
+
+def son_iki_olcumu_getir(kullanici_id):
+    if not DATABASE_URL:
+        return []
+    baglanti = psycopg2.connect(DATABASE_URL)
+    imlec = baglanti.cursor()
+    imlec.execute(
+        "SELECT tarih, kilo, kol, bel, kalca, gogus, bacak FROM vucut_olculeri "
+        "WHERE kullanici_id = %s ORDER BY tarih DESC LIMIT 2",
+        (kullanici_id,),
+    )
+    satirlar = imlec.fetchall()
+    imlec.close()
+    baglanti.close()
+    return satirlar
+
+
+def tum_olcumleri_getir(kullanici_id):
+    if not DATABASE_URL:
+        return []
+    baglanti = psycopg2.connect(DATABASE_URL)
+    imlec = baglanti.cursor()
+    imlec.execute(
+        "SELECT tarih, kilo, kol, bel, kalca, gogus, bacak FROM vucut_olculeri "
+        "WHERE kullanici_id = %s ORDER BY tarih ASC",
+        (kullanici_id,),
+    )
+    satirlar = imlec.fetchall()
+    imlec.close()
+    baglanti.close()
+    return satirlar
+
+
+def olcum_ozeti_ve_trend(kullanici_id):
+    """Son ölçüm ve varsa bir önceki ölçümle karşılaştırmalı değişimi
+    metin olarak döndürür — antrenman/beslenme önerilerine otomatik
+    dahil edilmek üzere."""
+    son_ikisi = son_iki_olcumu_getir(kullanici_id)
+    if not son_ikisi:
+        return ""
+
+    alanlar = ["kilo", "kol", "bel", "kalca", "gogus", "bacak"]
+    son = son_ikisi[0]
+    satirlar = [f"En son ölçümlerim ({son[0].strftime('%d %B %Y') if hasattr(son[0], 'strftime') else son[0]}):"]
+    for i, ad in enumerate(alanlar, start=1):
+        if son[i]:
+            satirlar.append(f"- {ad.capitalize()}: {son[i]}")
+
+    if len(son_ikisi) > 1:
+        onceki = son_ikisi[1]
+        satirlar.append("\nBir önceki ölçüme göre değişim:")
+        for i, ad in enumerate(alanlar, start=1):
+            try:
+                yeni_deger = float(str(son[i]).replace(",", "."))
+                eski_deger = float(str(onceki[i]).replace(",", "."))
+                fark = yeni_deger - eski_deger
+                isaret = "+" if fark >= 0 else ""
+                satirlar.append(f"- {ad.capitalize()}: {isaret}{fark:.1f}")
+            except (ValueError, TypeError):
+                continue
+
+    return "\n".join(satirlar)
+
+
+async def olcum_ekle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["olcum_onboarding_index"] = 0
+    context.user_data["olcum_onboarding_cevaplar"] = {}
+    await update.message.reply_text(
+        "Ölçümlerini alalım, aylık takip edip sana göre antrenman/beslenmeni "
+        "ayarlayayım. İstersen /iptal ile durdurabilirsin.\n\n"
+        f"1/{len(OLCUM_SORULARI)}: {OLCUM_SORULARI[0][1]}"
+    )
+
+
+async def _olcum_cevabini_isle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    index = context.user_data.get("olcum_onboarding_index", 0)
+    anahtar, _ = OLCUM_SORULARI[index]
+    context.user_data["olcum_onboarding_cevaplar"][anahtar] = update.message.text
+
+    yeni_index = index + 1
+    if yeni_index < len(OLCUM_SORULARI):
+        context.user_data["olcum_onboarding_index"] = yeni_index
+        await update.message.reply_text(
+            f"{yeni_index + 1}/{len(OLCUM_SORULARI)}: {OLCUM_SORULARI[yeni_index][1]}"
+        )
+        return
+
+    kullanici_id = update.effective_user.id
+    cevaplar = context.user_data["olcum_onboarding_cevaplar"]
+    olcumu_kaydet(kullanici_id, cevaplar)
+
+    context.user_data.pop("olcum_onboarding_index", None)
+    context.user_data.pop("olcum_onboarding_cevaplar", None)
+
+    await update.message.reply_text("✅ Ölçümlerin kaydedildi, yorumluyorum...")
+
+    ozet = olcum_ozeti_ve_trend(kullanici_id)
+    client_gemini, koleksiyon = istemcileri_al()
+    yumusak = yumusak_ton_mu(kullanici_id)
+    profil = profili_oku(kullanici_id)
+    soru = (f"Yeni vücut ölçümlerimi ekledim, bunları yorumlar mısın ve gerekirse "
+            f"antrenman/beslenme planımda ne değiştirmemi önerirsin?\n\n{ozet}")
+    bulunan = koleksiyon.query(query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
+    baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
+    gecmis = gecmisi_oku(kullanici_id)
+    cevap = cevap_uret(client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=profil)
+
+    mesaji_kaydet(kullanici_id, "user", soru)
+    mesaji_kaydet(kullanici_id, "model", cevap)
+    await update.message.reply_text(cevap)
+
+
+async def olcum_gecmisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kullanici_id = update.effective_user.id
+    tumu = tum_olcumleri_getir(kullanici_id)
+    if not tumu:
+        await update.message.reply_text("Henüz hiç ölçüm eklemedin. /olcum_ekle ile başla.")
+        return
+
+    satirlar = ["📏 Ölçüm geçmişin:\n"]
+    for satir in tumu:
+        tarih = satir[0].strftime("%d %B %Y") if hasattr(satir[0], "strftime") else satir[0]
+        satirlar.append(
+            f"{tarih}: kilo {satir[1]}, kol {satir[2]}, bel {satir[3]}, "
+            f"kalça {satir[4]}, göğüs {satir[5]}, bacak {satir[6]}"
+        )
+    await update.message.reply_text("\n".join(satirlar))
+
+
+async def olcum_hatirlatma_ac(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kullanici_id = update.effective_user.id
+    if DATABASE_URL:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        baglanti.autocommit = True
+        imlec = baglanti.cursor()
+        imlec.execute(
+            "INSERT INTO tg_ayarlar (kullanici_id, olcum_hatirlatma) VALUES (%s, TRUE) "
+            "ON CONFLICT (kullanici_id) DO UPDATE SET olcum_hatirlatma = TRUE",
+            (kullanici_id,),
+        )
+        imlec.close()
+        baglanti.close()
+    await update.message.reply_text("Ayda bir ölçüm hatırlatması göndereceğim.")
+
+
+async def olcum_hatirlatma_kapat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kullanici_id = update.effective_user.id
+    if DATABASE_URL:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        baglanti.autocommit = True
+        imlec = baglanti.cursor()
+        imlec.execute(
+            "INSERT INTO tg_ayarlar (kullanici_id, olcum_hatirlatma) VALUES (%s, FALSE) "
+            "ON CONFLICT (kullanici_id) DO UPDATE SET olcum_hatirlatma = FALSE",
+            (kullanici_id,),
+        )
+        imlec.close()
+        baglanti.close()
+    await update.message.reply_text("Ölçüm hatırlatmaları kapatıldı.")
+
+
+async def olcum_hatirlatma_isi(context: ContextTypes.DEFAULT_TYPE):
+    """Her gün kontrol eder: hatırlatması açık VE son ölçümünden 30+ gün
+    geçmiş (ya da hiç ölçümü olmayan) kullanıcılara hatırlatma gönderir."""
+    if not DATABASE_URL:
+        return
+    try:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        imlec = baglanti.cursor()
+        imlec.execute(
+            "SELECT kullanici_id FROM tg_ayarlar WHERE olcum_hatirlatma = TRUE"
+        )
+        kullanicilar = [r[0] for r in imlec.fetchall()]
+        imlec.close()
+        baglanti.close()
+    except Exception:
+        return
+
+    for kullanici_id in kullanicilar:
+        try:
+            son_ikisi = son_iki_olcumu_getir(kullanici_id)
+            gonder = False
+            if not son_ikisi:
+                gonder = True
+            else:
+                son_tarih = son_ikisi[0][0]
+                if hasattr(son_tarih, "date"):
+                    gecen_gun = (datetime.now() - son_tarih.replace(tzinfo=None)).days
+                    if gecen_gun >= 30:
+                        gonder = True
+            if gonder:
+                await context.bot.send_message(
+                    chat_id=kullanici_id,
+                    text="📏 Aylık ölçüm zamanı geldi gibi! Vücut ölçülerini "
+                         "güncellemek için /olcum_ekle yazabilirsin.",
+                )
+        except Exception as e:
+            print(f"Ölçüm hatırlatma hatası (kullanıcı {kullanici_id}): {e}")
 
 
 async def sabah_ac(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1384,6 +1630,9 @@ async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None)
 
     gecmis = gecmisi_oku(kullanici_id)
     profil = profili_oku(kullanici_id)
+    olcum_ozeti = olcum_ozeti_ve_trend(kullanici_id)
+    if olcum_ozeti:
+        profil = (profil + "\n\n" + olcum_ozeti).strip() if profil else olcum_ozeti
     cevap = cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64, gorsel_mime, yumusak, profil)
 
     mesaji_kaydet(kullanici_id, "user", soru)
@@ -1432,6 +1681,9 @@ async def zorla_video_ayarla(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def mesaj_geldi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "profil_onboarding_index" in context.user_data:
         await _onboarding_cevabini_isle(update, context)
+        return
+    if "olcum_onboarding_index" in context.user_data:
+        await _olcum_cevabini_isle(update, context)
         return
     await _soruyu_isle(update, context, update.message.text)
 
@@ -1642,6 +1894,10 @@ def main():
     app.add_handler(CommandHandler("strava_ozet", strava_ozet))
     app.add_handler(CommandHandler("sabah_ac", sabah_ac))
     app.add_handler(CommandHandler("sabah_kapat", sabah_kapat))
+    app.add_handler(CommandHandler("olcum_ekle", olcum_ekle))
+    app.add_handler(CommandHandler("olcum_gecmisi", olcum_gecmisi))
+    app.add_handler(CommandHandler("olcum_hatirlatma_ac", olcum_hatirlatma_ac))
+    app.add_handler(CommandHandler("olcum_hatirlatma_kapat", olcum_hatirlatma_kapat))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_geldi))
     app.add_handler(MessageHandler(filters.VOICE, ses_geldi))
     app.add_handler(MessageHandler(filters.PHOTO, foto_geldi))
@@ -1661,8 +1917,13 @@ def main():
             app.job_queue.run_daily(
                 sabah_mesaji_isi, time=_time(7, 0, tzinfo=ZoneInfo("Europe/Istanbul")),
             )
+            # Her gün 09:00'da, son ölçümünden 30+ gün geçmiş kullanıcılara
+            # aylık ölçüm hatırlatması gönderir.
+            app.job_queue.run_daily(
+                olcum_hatirlatma_isi, time=_time(9, 0, tzinfo=ZoneInfo("Europe/Istanbul")),
+            )
         except Exception as e:
-            print(f"Sabah mesajı zamanlanamadı: {e}")
+            print(f"Zamanlanmış işler kurulamadı: {e}")
 
     print(f"{UYGULAMA_ADI} Telegram botu başlıyor...")
     app.run_polling()
