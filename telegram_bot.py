@@ -883,7 +883,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/olcum_gecmisi — geçmiş ölçümlerini gör\n"
         f"/olcum_hatirlatma_ac, /olcum_hatirlatma_kapat — aylık hatırlatma\n\n"
         f"🍽️ Beslenme:\n"
-        f"/yemek_ekle — yemek fotoğrafını kaydet, kalori/makro tahmini al\n"
+        f"/yemek_ekle — yemek modunu aç/kapat (açıkken TÜM fotoğraflar otomatik kaydedilir)\n"
         f"/beslenme_ozet [gün] — beslenme özeti (varsayılan bugün)\n\n"
         f"🔊 Sesli cevap:\n"
         f"/sesli_cevap_ac — cevapları sesli de al\n"
@@ -1381,8 +1381,17 @@ def beslenme_ozeti_getir(kullanici_id, gun_sayisi=1):
 
 
 async def yemek_ekle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["yemek_bekleniyor"] = True
-    await update.message.reply_text("📸 Şimdi yediğin/yiyeceğin şeyin fotoğrafını gönder, kaydedip yorumlayayım.")
+    su_an_acik = context.user_data.get("yemek_modu", False)
+    if su_an_acik:
+        context.user_data["yemek_modu"] = False
+        await update.message.reply_text("Yemek modu kapatıldı, fotoğraflar artık normal soru gibi işlenecek.")
+    else:
+        context.user_data["yemek_modu"] = True
+        await update.message.reply_text(
+            "📸 Yemek modu açık — bundan sonra gönderdiğin HER fotoğrafı otomatik "
+            "yemek olarak kaydedip kalori/makro tahmini yapacağım. Kapatmak için "
+            "tekrar /yemek_ekle yaz."
+        )
 
 
 async def _yemek_fotografini_isle(update: Update, context: ContextTypes.DEFAULT_TYPE, foto_bytes):
@@ -1947,8 +1956,7 @@ async def foto_geldi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dosya = await context.bot.get_file(update.message.photo[-1].file_id)
     foto_bytes = bytes(await dosya.download_as_bytearray())
 
-    if context.user_data.get("yemek_bekleniyor"):
-        context.user_data["yemek_bekleniyor"] = False
+    if context.user_data.get("yemek_modu"):
         await _yemek_fotografini_isle(update, context, foto_bytes)
         return
 
