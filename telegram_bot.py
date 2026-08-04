@@ -884,7 +884,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/olcum_hatirlatma_ac, /olcum_hatirlatma_kapat — aylık hatırlatma\n\n"
         f"🍽️ Beslenme:\n"
         f"/yemek_ekle — yemek modunu aç/kapat (açıkken TÜM fotoğraflar otomatik kaydedilir)\n"
-        f"/beslenme_ozet [gün] — beslenme özeti (varsayılan bugün)\n\n"
+        f"/beslenme_ozet [gün] — beslenme özeti (varsayılan bugün)\n"
+        f"/yemek_duzelt <kalori> <p> <k> <y> — son kaydı gerçek değerlerle düzelt\n\n"
         f"🔊 Sesli cevap:\n"
         f"/sesli_cevap_ac — cevapları sesli de al\n"
         f"/sesli_cevap_kapat — kapat\n\n"
@@ -1398,13 +1399,22 @@ async def _yemek_fotografini_isle(update: Update, context: ContextTypes.DEFAULT_
     client_gemini, _ = istemcileri_al()
     gorsel_b64 = base64.b64encode(foto_bytes).decode("utf-8")
     kullanici_id = update.effective_user.id
+    kullanici_notu = update.message.caption or ""
 
     talimat = (
         "Bu fotoğraftaki yemeği/öğünü incele. SADECE aşağıdaki JSON formatında "
         "cevap ver, başka hiçbir şey yazma:\n"
         '{"aciklama": "kısa açıklama", "kalori": 000, "protein": 00, '
         '"karbonhidrat": 00, "yag": 00}\n'
-        "Değerler tahmini olabilir ama makul olsun (gram/kalori cinsinden sayı, birim yazma)."
+        "Değerler tahmini olabilir ama makul olsun (gram/kalori cinsinden sayı, birim yazma). "
+        + (
+            f"\n\nÖNEMLİ: Kullanıcı bu fotoğrafa şu notu eklemiş, bunu MUTLAKA dikkate al "
+            f"(porsiyon/malzeme bilgisi verdiyse tahminini buna göre kesinleştir): "
+            f"\"{kullanici_notu}\""
+            if kullanici_notu else
+            "\n\nKullanıcı porsiyon/malzeme belirtmedi, görselden en makul tahmini yap "
+            "ama bunun kaba bir tahmin olduğunu unutma."
+        )
     )
     try:
         yanit = client_gemini.models.generate_content(
@@ -1434,6 +1444,83 @@ async def _yemek_fotografini_isle(update: Update, context: ContextTypes.DEFAULT_
         f"K: {veri.get('karbonhidrat', '?')}g | "
         f"Y: {veri.get('yag', '?')}g"
     )
+
+    # Kayıttan sonra, kullanıcının profiline/hedefine göre kısa bir
+    # koçluk yorumu da ekle — sadece kayıt değil, gerçek değerlendirme.
+    try:
+        yumusak = yumusak_ton_mu(kullanici_id)
+        profil = profili_oku(kullanici_id)
+        olcum_ozeti = olcum_ozeti_ve_trend(kullanici_id)
+        if olcum_ozeti:
+            profil = (profil + "\n\n" + olcum_ozeti).strip() if profil else olcum_ozeti
+        gunluk_beslenme = beslenme_gunluk_ozet_metni(kullanici_id)
+        if gunluk_beslenme:
+            profil = (profil + "\n\n" + gunluk_beslenme).strip() if profil else gunluk_beslenme
+
+        soru = (
+            f"Az önce şu öğünü yedim: {veri.get('aciklama', '')} "
+            f"(~{veri.get('kalori', '?')} kcal, P:{veri.get('protein', '?')}g, "
+            f"K:{veri.get('karbonhidrat', '?')}g, Y:{veri.get('yag', '?')}g). "
+            f"Kısaca yorumlar mısın — hedefime uygun mu, bir sonraki öğünde "
+            f"nelere dikkat etmeliyim?"
+        )
+        _, koleksiyon = istemcileri_al()
+        bulunan = koleksiyon.query(query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
+        baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
+        gecmis = gecmisi_oku(kullanici_id)
+        yorum = cevap_uret(client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=profil)
+
+        mesaji_kaydet(kullanici_id, "user", soru)
+        mesaji_kaydet(kullanici_id, "model", yorum)
+        await update.message.reply_text(yorum)
+    except Exception as e:
+        print(f"Yemek yorumu üretilirken hata: {e}")
+
+
+async def yemek_duzelt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kullanım: /yemek_duzelt <kalori> <protein> <karbonhidrat> <yag>
+    En son eklediğin yemek kaydının değerlerini, gerçek (örn. paket
+    etiketinden bildiğin) rakamlarla düzeltir."""
+    if len(context.args) < 4:
+        await update.message.reply_text(
+            "Kullanım: /yemek_duzelt <kalori> <protein> <karbonhidrat> <yag>\n"
+            "Örn: /yemek_duzelt 450 30 40 15"
+        )
+        return
+
+    try:
+        kalori, protein, karbonhidrat, yag = [int(x) for x in context.args[:4]]
+    except ValueError:
+        await update.message.reply_text("Değerler sayı olmalı. Örn: /yemek_duzelt 450 30 40 15")
+        return
+
+    kullanici_id = update.effective_user.id
+    if not DATABASE_URL:
+        await update.message.reply_text("Veritabanı bağlantısı yok.")
+        return
+
+    baglanti = psycopg2.connect(DATABASE_URL)
+    baglanti.autocommit = True
+    imlec = baglanti.cursor()
+    imlec.execute(
+        "SELECT id FROM beslenme_kayitlari WHERE kullanici_id = %s "
+        "ORDER BY tarih DESC LIMIT 1", (kullanici_id,),
+    )
+    satir = imlec.fetchone()
+    if not satir:
+        await update.message.reply_text("Düzeltilecek bir kaydın yok.")
+        imlec.close()
+        baglanti.close()
+        return
+
+    imlec.execute(
+        "UPDATE beslenme_kayitlari SET tahmini_kalori = %s, tahmini_protein = %s, "
+        "tahmini_karbonhidrat = %s, tahmini_yag = %s WHERE id = %s",
+        (kalori, protein, karbonhidrat, yag, satir[0]),
+    )
+    imlec.close()
+    baglanti.close()
+    await update.message.reply_text(f"✅ Düzeltildi: {kalori} kcal | P:{protein}g | K:{karbonhidrat}g | Y:{yag}g")
 
 
 async def beslenme_ozet(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2159,6 +2246,7 @@ def main():
     app.add_handler(CommandHandler("sesli_cevap_kapat", sesli_cevap_kapat))
     app.add_handler(CommandHandler("yemek_ekle", yemek_ekle))
     app.add_handler(CommandHandler("beslenme_ozet", beslenme_ozet))
+    app.add_handler(CommandHandler("yemek_duzelt", yemek_duzelt))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_geldi))
     app.add_handler(MessageHandler(filters.VOICE, ses_geldi))
     app.add_handler(MessageHandler(filters.PHOTO, foto_geldi))
