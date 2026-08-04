@@ -237,6 +237,17 @@ def _basit_semayi_hazirla():
             );
             ALTER TABLE tg_ayarlar ADD COLUMN IF NOT EXISTS sabah_mesaji BOOLEAN DEFAULT FALSE;
             ALTER TABLE tg_ayarlar ADD COLUMN IF NOT EXISTS olcum_hatirlatma BOOLEAN DEFAULT TRUE;
+            ALTER TABLE tg_ayarlar ADD COLUMN IF NOT EXISTS sesli_cevap BOOLEAN DEFAULT FALSE;
+            CREATE TABLE IF NOT EXISTS beslenme_kayitlari (
+                id SERIAL PRIMARY KEY,
+                kullanici_id BIGINT NOT NULL,
+                tarih TIMESTAMP DEFAULT NOW(),
+                aciklama TEXT,
+                tahmini_kalori INTEGER,
+                tahmini_protein INTEGER,
+                tahmini_karbonhidrat INTEGER,
+                tahmini_yag INTEGER
+            );
         """)
         imlec.close()
         baglanti.close()
@@ -610,6 +621,45 @@ def ses_yaziya_cevir(client_gemini, ses_bytes, mime_tipi="audio/ogg"):
     return None
 
 
+_TTS_MODEL_LISTESI = ["gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"]
+
+
+def metni_sese_cevir(client_gemini, metin, ses_adi="Kore"):
+    """Metni Gemini'nin sesli üretim (TTS) modeliyle sese çevirir,
+    WAV formatında ses byte'ları döndürür. Uzun metinlerde ilk ~600
+    karakterle sınırlar (TTS modelleri uzun metinlerde bozulabiliyor)."""
+    import wave
+
+    kisa_metin = metin[:600] if len(metin) > 600 else metin
+
+    for model_adi in _TTS_MODEL_LISTESI:
+        try:
+            yanit = client_gemini.models.generate_content(
+                model=model_adi,
+                contents=kisa_metin,
+                config={
+                    "response_modalities": ["AUDIO"],
+                    "speech_config": {
+                        "voice_config": {
+                            "prebuilt_voice_config": {"voice_name": ses_adi}
+                        }
+                    },
+                },
+            )
+            pcm_veri = yanit.candidates[0].content.parts[0].inline_data.data
+            tampon = BytesIO()
+            with wave.open(tampon, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(24000)
+                wf.writeframes(pcm_veri)
+            return tampon.getvalue()
+        except Exception as e:
+            print(f"TTS hatası ({model_adi}): {e}")
+            continue
+    return None
+
+
 # ============== ANA CEVAP ÜRETME ==============
 def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime=None,
                 yumusak=False, profil=""):
@@ -832,6 +882,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/olcum_ekle — ölçümlerini kaydet (kol, bel, kalça, göğüs, bacak, kilo)\n"
         f"/olcum_gecmisi — geçmiş ölçümlerini gör\n"
         f"/olcum_hatirlatma_ac, /olcum_hatirlatma_kapat — aylık hatırlatma\n\n"
+        f"🍽️ Beslenme:\n"
+        f"/yemek_ekle — yemek fotoğrafını kaydet, kalori/makro tahmini al\n"
+        f"/beslenme_ozet [gün] — beslenme özeti (varsayılan bugün)\n\n"
+        f"🔊 Sesli cevap:\n"
+        f"/sesli_cevap_ac — cevapları sesli de al\n"
+        f"/sesli_cevap_kapat — kapat\n\n"
         f"🏃 Strava:\n"
         f"/strava_baglan <token> — hesabını bağla\n"
         f"/son_antrenman — son aktiviteni yorumlat\n"
@@ -1241,6 +1297,180 @@ async def sabah_kapat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Sabah mesajları kapatıldı.")
 
 
+def sesli_cevap_mi(kullanici_id):
+    if not DATABASE_URL:
+        return False
+    try:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        imlec = baglanti.cursor()
+        imlec.execute("SELECT sesli_cevap FROM tg_ayarlar WHERE kullanici_id = %s", (kullanici_id,))
+        satir = imlec.fetchone()
+        imlec.close()
+        baglanti.close()
+        return bool(satir[0]) if satir else False
+    except Exception:
+        return False
+
+
+async def sesli_cevap_ac(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kullanici_id = update.effective_user.id
+    if DATABASE_URL:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        baglanti.autocommit = True
+        imlec = baglanti.cursor()
+        imlec.execute(
+            "INSERT INTO tg_ayarlar (kullanici_id, sesli_cevap) VALUES (%s, TRUE) "
+            "ON CONFLICT (kullanici_id) DO UPDATE SET sesli_cevap = TRUE",
+            (kullanici_id,),
+        )
+        imlec.close()
+        baglanti.close()
+    await update.message.reply_text(
+        "🔊 Tamamdır, bundan sonra cevaplarımı hem yazı hem sesli mesaj olarak "
+        "göndereceğim — spor salonunda eller boşken de dinleyebilirsin."
+    )
+
+
+async def sesli_cevap_kapat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kullanici_id = update.effective_user.id
+    if DATABASE_URL:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        baglanti.autocommit = True
+        imlec = baglanti.cursor()
+        imlec.execute(
+            "INSERT INTO tg_ayarlar (kullanici_id, sesli_cevap) VALUES (%s, FALSE) "
+            "ON CONFLICT (kullanici_id) DO UPDATE SET sesli_cevap = FALSE",
+            (kullanici_id,),
+        )
+        imlec.close()
+        baglanti.close()
+    await update.message.reply_text("Sesli cevaplar kapatıldı, sadece yazı ile devam.")
+
+
+# ============== BESLENME TAKİBİ (FOTOĞRAFLI) ==============
+def beslenme_kaydet(kullanici_id, aciklama, kalori, protein, karbonhidrat, yag):
+    if not DATABASE_URL:
+        return
+    baglanti = psycopg2.connect(DATABASE_URL)
+    baglanti.autocommit = True
+    imlec = baglanti.cursor()
+    imlec.execute(
+        "INSERT INTO beslenme_kayitlari (kullanici_id, aciklama, tahmini_kalori, "
+        "tahmini_protein, tahmini_karbonhidrat, tahmini_yag) VALUES (%s, %s, %s, %s, %s, %s)",
+        (kullanici_id, aciklama, kalori, protein, karbonhidrat, yag),
+    )
+    imlec.close()
+    baglanti.close()
+
+
+def beslenme_ozeti_getir(kullanici_id, gun_sayisi=1):
+    if not DATABASE_URL:
+        return []
+    baglanti = psycopg2.connect(DATABASE_URL)
+    imlec = baglanti.cursor()
+    imlec.execute(
+        "SELECT tarih, aciklama, tahmini_kalori, tahmini_protein, tahmini_karbonhidrat, "
+        "tahmini_yag FROM beslenme_kayitlari WHERE kullanici_id = %s AND "
+        "tarih >= NOW() - INTERVAL '%s days' ORDER BY tarih ASC",
+        (kullanici_id, gun_sayisi),
+    )
+    satirlar = imlec.fetchall()
+    imlec.close()
+    baglanti.close()
+    return satirlar
+
+
+async def yemek_ekle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["yemek_bekleniyor"] = True
+    await update.message.reply_text("📸 Şimdi yediğin/yiyeceğin şeyin fotoğrafını gönder, kaydedip yorumlayayım.")
+
+
+async def _yemek_fotografini_isle(update: Update, context: ContextTypes.DEFAULT_TYPE, foto_bytes):
+    client_gemini, _ = istemcileri_al()
+    gorsel_b64 = base64.b64encode(foto_bytes).decode("utf-8")
+    kullanici_id = update.effective_user.id
+
+    talimat = (
+        "Bu fotoğraftaki yemeği/öğünü incele. SADECE aşağıdaki JSON formatında "
+        "cevap ver, başka hiçbir şey yazma:\n"
+        '{"aciklama": "kısa açıklama", "kalori": 000, "protein": 00, '
+        '"karbonhidrat": 00, "yag": 00}\n'
+        "Değerler tahmini olabilir ama makul olsun (gram/kalori cinsinden sayı, birim yazma)."
+    )
+    try:
+        yanit = client_gemini.models.generate_content(
+            model="gemini-flash-latest",
+            contents=[
+                {"role": "user", "parts": [
+                    {"text": talimat},
+                    {"inline_data": {"mime_type": "image/jpeg", "data": gorsel_b64}},
+                ]}
+            ],
+        )
+        metin = re.sub(r"^```json\s*|\s*```$", "", yanit.text.strip(), flags=re.MULTILINE).strip("`").strip()
+        veri = json.loads(metin)
+    except Exception as e:
+        await update.message.reply_text(f"Yemek analiz edilemedi: {e}")
+        return
+
+    beslenme_kaydet(
+        kullanici_id, veri.get("aciklama", ""), veri.get("kalori"),
+        veri.get("protein"), veri.get("karbonhidrat"), veri.get("yag"),
+    )
+
+    await update.message.reply_text(
+        f"✅ Kaydedildi: {veri.get('aciklama', '')}\n"
+        f"~{veri.get('kalori', '?')} kcal | "
+        f"P: {veri.get('protein', '?')}g | "
+        f"K: {veri.get('karbonhidrat', '?')}g | "
+        f"Y: {veri.get('yag', '?')}g"
+    )
+
+
+async def beslenme_ozet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kullanici_id = update.effective_user.id
+    gun_sayisi = 1
+    if context.args:
+        try:
+            gun_sayisi = int(context.args[0])
+        except ValueError:
+            pass
+
+    kayitlar = beslenme_ozeti_getir(kullanici_id, gun_sayisi)
+    if not kayitlar:
+        await update.message.reply_text(
+            f"Son {gun_sayisi} günde hiç beslenme kaydın yok. /yemek_ekle ile ekleyebilirsin."
+        )
+        return
+
+    toplam_kalori = sum((k[2] or 0) for k in kayitlar)
+    toplam_protein = sum((k[3] or 0) for k in kayitlar)
+    toplam_karbonhidrat = sum((k[4] or 0) for k in kayitlar)
+    toplam_yag = sum((k[5] or 0) for k in kayitlar)
+
+    satirlar = [f"📊 Son {gun_sayisi} gün beslenme özeti ({len(kayitlar)} kayıt):\n"]
+    satirlar.append(f"Toplam: ~{toplam_kalori} kcal | P: {toplam_protein}g | "
+                     f"K: {toplam_karbonhidrat}g | Y: {toplam_yag}g")
+    if gun_sayisi > 1:
+        satirlar.append(f"Günlük ortalama: ~{toplam_kalori // gun_sayisi} kcal")
+    satirlar.append("\nKayıtlar:")
+    for tarih, aciklama, kalori, _, _, _ in kayitlar:
+        tarih_str = tarih.strftime("%d.%m %H:%M") if hasattr(tarih, "strftime") else str(tarih)
+        satirlar.append(f"- {tarih_str}: {aciklama} (~{kalori} kcal)")
+
+    await update.message.reply_text("\n".join(satirlar))
+
+
+def beslenme_gunluk_ozet_metni(kullanici_id):
+    """cevap_uret'e otomatik verilecek kısa bugünkü beslenme özeti."""
+    kayitlar = beslenme_ozeti_getir(kullanici_id, gun_sayisi=1)
+    if not kayitlar:
+        return ""
+    toplam_kalori = sum((k[2] or 0) for k in kayitlar)
+    return f"Bugün şu ana kadar yediklerim (~{toplam_kalori} kcal, {len(kayitlar)} öğün kaydedildi)."
+
+
+
 async def sabah_mesaji_isi(context: ContextTypes.DEFAULT_TYPE):
     """Her sabah 07:00'de (Türkiye saati), sabah mesajını açmış tüm
     kullanıcılara KENDİ profillerine/verilerine göre kişisel bir
@@ -1633,6 +1863,9 @@ async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None)
     olcum_ozeti = olcum_ozeti_ve_trend(kullanici_id)
     if olcum_ozeti:
         profil = (profil + "\n\n" + olcum_ozeti).strip() if profil else olcum_ozeti
+    beslenme_ozeti = beslenme_gunluk_ozet_metni(kullanici_id)
+    if beslenme_ozeti:
+        profil = (profil + "\n\n" + beslenme_ozeti).strip() if profil else beslenme_ozeti
     cevap = cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64, gorsel_mime, yumusak, profil)
 
     mesaji_kaydet(kullanici_id, "user", soru)
@@ -1646,6 +1879,16 @@ async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None)
          InlineKeyboardButton("📊 Excel Yap", callback_data="excel")],
     ])
     await update.message.reply_text(cevap, reply_markup=dugmeler)
+
+    if sesli_cevap_mi(kullanici_id):
+        try:
+            ses_verisi = metni_sese_cevir(client_gemini, cevap)
+            if ses_verisi:
+                await update.message.reply_audio(
+                    audio=InputFile(BytesIO(ses_verisi), filename="cevap.wav")
+                )
+        except Exception as e:
+            print(f"Sesli cevap gönderilirken hata: {e}")
 
 
 async def zorla_video_ayarla(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1703,6 +1946,12 @@ async def ses_geldi(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def foto_geldi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dosya = await context.bot.get_file(update.message.photo[-1].file_id)
     foto_bytes = bytes(await dosya.download_as_bytearray())
+
+    if context.user_data.get("yemek_bekleniyor"):
+        context.user_data["yemek_bekleniyor"] = False
+        await _yemek_fotografini_isle(update, context, foto_bytes)
+        return
+
     gorsel_b64 = base64.b64encode(foto_bytes).decode("utf-8")
     soru = update.message.caption or "Bu fotoğrafa bakıp yorumlar mısın?"
     await _soruyu_isle(update, context, soru, gorsel_b64, "image/jpeg")
@@ -1898,6 +2147,10 @@ def main():
     app.add_handler(CommandHandler("olcum_gecmisi", olcum_gecmisi))
     app.add_handler(CommandHandler("olcum_hatirlatma_ac", olcum_hatirlatma_ac))
     app.add_handler(CommandHandler("olcum_hatirlatma_kapat", olcum_hatirlatma_kapat))
+    app.add_handler(CommandHandler("sesli_cevap_ac", sesli_cevap_ac))
+    app.add_handler(CommandHandler("sesli_cevap_kapat", sesli_cevap_kapat))
+    app.add_handler(CommandHandler("yemek_ekle", yemek_ekle))
+    app.add_handler(CommandHandler("beslenme_ozet", beslenme_ozet))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_geldi))
     app.add_handler(MessageHandler(filters.VOICE, ses_geldi))
     app.add_handler(MessageHandler(filters.PHOTO, foto_geldi))
