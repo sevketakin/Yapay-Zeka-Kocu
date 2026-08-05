@@ -53,6 +53,18 @@ GEMINI_MODEL_LISTESI = [
     "gemini-3.1-flash-lite",
     "gemini-3-flash-preview",
 ]
+
+# SADECE ana koçluk cevabı (cevap_uret) için kullanılır — Pro'yu önce
+# dener (daha karmaşık kurallara daha sadık kalıyor), olmazsa/hata
+# verirse otomatik Flash'e düşer. Diğer tüm işler (takvim/excel/profil/
+# yemek/ses) hâlâ GEMINI_MODEL_LISTESI'ni (ucuz Flash) kullanmaya devam
+# ediyor — maliyet sadece en kritik yerde artıyor.
+ANA_CEVAP_MODEL_LISTESI = [
+    "gemini-3.1-pro",
+    "gemini-3.1-pro-preview",
+    "gemini-2.5-pro",
+] + GEMINI_MODEL_LISTESI
+
 KAC_PARCA_GETIRILSIN = 25
 UYGULAMA_ADI = "Koçum"
 
@@ -781,7 +793,7 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
         parts.append({"inline_data": {"mime_type": gorsel_mime, "data": gorsel_b64}})
     contents.append({"role": "user", "parts": parts})
 
-    for model_adi in GEMINI_MODEL_LISTESI:
+    for model_adi in ANA_CEVAP_MODEL_LISTESI:
         try:
             yanit = client_gemini.models.generate_content(
                 model=model_adi, contents=contents,
@@ -2000,25 +2012,16 @@ async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None)
     profili_otomatik_guncelle(client_gemini, kullanici_id, soru, cevap)
 
     context.chat_data["son_cevap"] = cevap
+    context.chat_data["son_kaynaklar"] = kaynaklar
 
-    # Kaynakları cevaba ekle — böylece cevabın gerçekten arşivinden mi
-    # geldiğini, yoksa genel bilgi mi olduğunu görebilirsin.
-    gosterilecek_metin = cevap
+    dugme_satiri = [
+        InlineKeyboardButton("📅 Takvime Hazırla", callback_data="takvim"),
+        InlineKeyboardButton("📊 Excel Yap", callback_data="excel"),
+    ]
     if kaynaklar:
-        kaynak_satirlari = []
-        for k in kaynaklar[:8]:
-            if k.get("link"):
-                kaynak_satirlari.append(f"🎬 {k['link']}")
-            elif k.get("baslik"):
-                kaynak_satirlari.append(f"📜 {k['baslik']}")
-        if kaynak_satirlari:
-            gosterilecek_metin = cevap + "\n\n🔍 Kullanılan kaynaklar:\n" + "\n".join(kaynak_satirlari)
-
-    dugmeler = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📅 Takvime Hazırla", callback_data="takvim"),
-         InlineKeyboardButton("📊 Excel Yap", callback_data="excel")],
-    ])
-    await guvenli_reply(update.message, gosterilecek_metin, reply_markup=dugmeler)
+        dugme_satiri.append(InlineKeyboardButton("🔍 Kaynaklar", callback_data="kaynaklar"))
+    dugmeler = InlineKeyboardMarkup([dugme_satiri])
+    await guvenli_reply(update.message, cevap, reply_markup=dugmeler)
 
     if sesli_cevap_mi(kullanici_id):
         try:
@@ -2125,6 +2128,19 @@ async def buton_tiklandi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             document=InputFile(BytesIO(excel_veri), filename="program.xlsx"),
             caption="📊 Excel dosyan hazır."
         )
+    elif query.data == "kaynaklar":
+        kaynaklar = context.chat_data.get("son_kaynaklar", [])
+        if not kaynaklar:
+            await query.message.reply_text("Bu cevap için gösterilecek kaynak yok.")
+            return
+        kaynak_satirlari = []
+        for k in kaynaklar[:10]:
+            if k.get("link"):
+                kaynak_satirlari.append(f"🎬 {k['link']}")
+            elif k.get("baslik"):
+                kaynak_satirlari.append(f"📜 {k['baslik']}")
+        metin = "🔍 Kullanılan kaynaklar:\n" + "\n".join(kaynak_satirlari)
+        await guvenli_reply(query.message, metin)
 
 
 async def _md_dosyasini_isle(update: Update, context: ContextTypes.DEFAULT_TYPE, belge):
