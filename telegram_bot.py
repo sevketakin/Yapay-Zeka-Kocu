@@ -660,7 +660,40 @@ def metni_sese_cevir(client_gemini, metin, ses_adi="Kore"):
     return None
 
 
-# ============== ANA CEVAP ÜRETME ==============
+# ============== TELEGRAM MESAJ UZUNLUK GÜVENLİĞİ ==============
+TELEGRAM_MAX_UZUNLUK = 3900  # Telegram'ın ~4096 sınırına güvenli pay
+
+
+async def guvenli_reply(message, metin, **kwargs):
+    """update.message.reply_text yerine kullanılır — mesaj çok uzunsa
+    (Telegram'ın 4096 karakter sınırını aşarsa) otomatik olarak
+    parçalara bölüp sırayla gönderir, hata fırlatmaz."""
+    if not metin:
+        metin = "(boş cevap)"
+    if len(metin) <= TELEGRAM_MAX_UZUNLUK:
+        await message.reply_text(metin, **kwargs)
+        return
+    parcalar = [metin[i:i + TELEGRAM_MAX_UZUNLUK] for i in range(0, len(metin), TELEGRAM_MAX_UZUNLUK)]
+    for i, parca in enumerate(parcalar):
+        if i == len(parcalar) - 1:
+            await message.reply_text(parca, **kwargs)  # butonlar/ekstra son parçada
+        else:
+            await message.reply_text(parca)
+
+
+async def guvenli_send_message(bot, chat_id, metin, **kwargs):
+    """context.bot.send_message için aynı güvenlik, proaktif mesajlarda kullanılır."""
+    if not metin:
+        metin = "(boş cevap)"
+    if len(metin) <= TELEGRAM_MAX_UZUNLUK:
+        await bot.send_message(chat_id=chat_id, text=metin, **kwargs)
+        return
+    parcalar = [metin[i:i + TELEGRAM_MAX_UZUNLUK] for i in range(0, len(metin), TELEGRAM_MAX_UZUNLUK)]
+    for parca in parcalar:
+        await bot.send_message(chat_id=chat_id, text=parca)
+
+
+
 def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime=None,
                 yumusak=False, profil=""):
     bugun = bugunun_tarihi()
@@ -1175,9 +1208,7 @@ async def _olcum_cevabini_isle(update: Update, context: ContextTypes.DEFAULT_TYP
 
     mesaji_kaydet(kullanici_id, "user", soru)
     mesaji_kaydet(kullanici_id, "model", cevap)
-    await update.message.reply_text(cevap)
-
-
+    await guvenli_reply(update.message, cevap)
 async def olcum_gecmisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kullanici_id = update.effective_user.id
     tumu = tum_olcumleri_getir(kullanici_id)
@@ -1192,7 +1223,7 @@ async def olcum_gecmisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{tarih}: kilo {satir[1]}, kol {satir[2]}, bel {satir[3]}, "
             f"kalça {satir[4]}, göğüs {satir[5]}, bacak {satir[6]}"
         )
-    await update.message.reply_text("\n".join(satirlar))
+    await guvenli_reply(update.message, "\n".join(satirlar))
 
 
 async def olcum_hatirlatma_ac(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1472,7 +1503,7 @@ async def _yemek_fotografini_isle(update: Update, context: ContextTypes.DEFAULT_
 
         mesaji_kaydet(kullanici_id, "user", soru)
         mesaji_kaydet(kullanici_id, "model", yorum)
-        await update.message.reply_text(yorum)
+        await guvenli_reply(update.message, yorum)
     except Exception as e:
         print(f"Yemek yorumu üretilirken hata: {e}")
 
@@ -1554,7 +1585,7 @@ async def beslenme_ozet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tarih_str = tarih.strftime("%d.%m %H:%M") if hasattr(tarih, "strftime") else str(tarih)
         satirlar.append(f"- {tarih_str}: {aciklama} (~{kalori} kcal)")
 
-    await update.message.reply_text("\n".join(satirlar))
+    await guvenli_reply(update.message, "\n".join(satirlar))
 
 
 def beslenme_gunluk_ozet_metni(kullanici_id):
@@ -1609,7 +1640,7 @@ async def sabah_mesaji_isi(context: ContextTypes.DEFAULT_TYPE):
 
             mesaji_kaydet(kullanici_id, "user", soru)
             mesaji_kaydet(kullanici_id, "model", cevap)
-            await context.bot.send_message(chat_id=kullanici_id, text=f"☀️ Günaydın!\n\n{cevap}")
+            await guvenli_send_message(context.bot, kullanici_id, f"☀️ Günaydın!\n\n{cevap}")
         except Exception as e:
             print(f"Sabah mesajı hatası (kullanıcı {kullanici_id}): {e}")
 
@@ -1771,7 +1802,7 @@ async def son_antrenman(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         mesaji_kaydet(kullanici_id, "user", soru)
         mesaji_kaydet(kullanici_id, "model", cevap)
-        await update.message.reply_text(cevap)
+        await guvenli_reply(update.message, cevap)
     except Exception as e:
         await update.message.reply_text(f"Antrenman getirilirken hata: {e}")
 
@@ -1837,7 +1868,7 @@ async def strava_ozet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         mesaji_kaydet(kullanici_id, "user", soru)
         mesaji_kaydet(kullanici_id, "model", cevap)
-        await update.message.reply_text(cevap)
+        await guvenli_reply(update.message, cevap)
     except Exception as e:
         await update.message.reply_text(f"Özet oluşturulurken hata: {e}")
 
@@ -1879,7 +1910,7 @@ async def strava_kontrol_isi(context: ContextTypes.DEFAULT_TYPE):
                 mesaji_kaydet(kullanici_id, "user", soru)
                 mesaji_kaydet(kullanici_id, "model", cevap)
 
-                await context.bot.send_message(chat_id=kullanici_id, text=f"🏃 Yeni antrenman algılandı!\n\n{cevap}")
+                await guvenli_send_message(context.bot, kullanici_id, f"🏃 Yeni antrenman algılandı!\n\n{cevap}")
                 strava_son_gorulen_guncelle(kullanici_id, aktivite["id"])
         except Exception as e:
             print(f"Strava kontrol hatası (kullanıcı {kullanici_id}): {e}")
@@ -1974,7 +2005,7 @@ async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None)
         [InlineKeyboardButton("📅 Takvime Hazırla", callback_data="takvim"),
          InlineKeyboardButton("📊 Excel Yap", callback_data="excel")],
     ])
-    await update.message.reply_text(cevap, reply_markup=dugmeler)
+    await guvenli_reply(update.message, cevap, reply_markup=dugmeler)
 
     if sesli_cevap_mi(kullanici_id):
         try:
