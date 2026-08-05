@@ -2001,11 +2001,24 @@ async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None)
 
     context.chat_data["son_cevap"] = cevap
 
+    # Kaynakları cevaba ekle — böylece cevabın gerçekten arşivinden mi
+    # geldiğini, yoksa genel bilgi mi olduğunu görebilirsin.
+    gosterilecek_metin = cevap
+    if kaynaklar:
+        kaynak_satirlari = []
+        for k in kaynaklar[:8]:
+            if k.get("link"):
+                kaynak_satirlari.append(f"🎬 {k['link']}")
+            elif k.get("baslik"):
+                kaynak_satirlari.append(f"📜 {k['baslik']}")
+        if kaynak_satirlari:
+            gosterilecek_metin = cevap + "\n\n🔍 Kullanılan kaynaklar:\n" + "\n".join(kaynak_satirlari)
+
     dugmeler = InlineKeyboardMarkup([
         [InlineKeyboardButton("📅 Takvime Hazırla", callback_data="takvim"),
          InlineKeyboardButton("📊 Excel Yap", callback_data="excel")],
     ])
-    await guvenli_reply(update.message, cevap, reply_markup=dugmeler)
+    await guvenli_reply(update.message, gosterilecek_metin, reply_markup=dugmeler)
 
     if sesli_cevap_mi(kullanici_id):
         try:
