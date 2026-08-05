@@ -800,8 +800,10 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
                 config={"system_instruction": sistem_mesaji},
             )
             if yanit.text and yanit.text.strip():
+                print(f"✅ CEVAP ÜRETİLDİ: model='{model_adi}'")
                 return yanit.text
-        except Exception:
+        except Exception as e:
+            print(f"❌ '{model_adi}' başarısız oldu, sıradakini deniyorum. Hata: {e}")
             continue
     return "Şu an cevap üretemedim, lütfen tekrar dener misin?"
 
