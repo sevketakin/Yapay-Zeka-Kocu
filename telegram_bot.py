@@ -59,8 +59,10 @@ GEMINI_MODEL_LISTESI = [
 # verirse otomatik Flash'e düşer. Diğer tüm işler (takvim/excel/profil/
 # yemek/ses) hâlâ GEMINI_MODEL_LISTESI'ni (ucuz Flash) kullanmaya devam
 # ediyor — maliyet sadece en kritik yerde artıyor.
+# NOT: 'gemini-3.1-pro' (preview'sız) test edildi, 404 veriyor — listede
+# YOK, gereksiz başarısız deneme/gecikme yaratmasın diye. Doğrulanan,
+# çalışan model ('gemini-3.1-pro-preview') en başta.
 ANA_CEVAP_MODEL_LISTESI = [
-    "gemini-3.1-pro",
     "gemini-3.1-pro-preview",
     "gemini-2.5-pro",
 ] + GEMINI_MODEL_LISTESI
@@ -956,6 +958,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def id_goster(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Telegram ID'n: {update.effective_user.id}")
+
+
+async def model_listesi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Geçici tanı komutu — senin API anahtarına GERÇEKTEN hangi
+    modellerin açık olduğunu, tahmin etmeden doğrudan Google'dan sorar."""
+    client_gemini, _ = istemcileri_al()
+    try:
+        modeller = client_gemini.models.list()
+        satirlar = []
+        for m in modeller:
+            ad = getattr(m, "name", str(m))
+            yontemler = getattr(m, "supported_actions", None) or getattr(m, "supported_generation_methods", None) or []
+            if "generateContent" in yontemler or "generate_content" in [str(y).lower() for y in yontemler] or not yontemler:
+                if "pro" in ad.lower() or "flash" in ad.lower():
+                    satirlar.append(ad)
+        if not satirlar:
+            satirlar = [getattr(m, "name", str(m)) for m in client_gemini.models.list()]
+        await guvenli_reply(update.message, "📋 Sana açık modeller:\n" + "\n".join(satirlar))
+    except Exception as e:
+        await update.message.reply_text(f"Model listesi alınamadı: {e}")
 
 
 async def yumusak_ac(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2284,6 +2306,7 @@ def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", id_goster))
+    app.add_handler(CommandHandler("model_listesi", model_listesi))
     app.add_handler(CommandHandler("yumusak_ac", yumusak_ac))
     app.add_handler(CommandHandler("yumusak_kapat", yumusak_kapat))
     app.add_handler(CommandHandler("temizle", temizle))
