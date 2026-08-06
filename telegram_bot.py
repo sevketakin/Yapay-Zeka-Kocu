@@ -20,6 +20,7 @@ Ortam değişkenleri (Railway'de ayarlanacak):
 
 import os
 import re
+import asyncio
 import json
 import uuid
 import zipfile
@@ -1239,10 +1240,12 @@ async def _olcum_cevabini_isle(update: Update, context: ContextTypes.DEFAULT_TYP
     profil = profili_oku(kullanici_id)
     soru = (f"Yeni vücut ölçümlerimi ekledim, bunları yorumlar mısın ve gerekirse "
             f"antrenman/beslenme planımda ne değiştirmemi önerirsin?\n\n{ozet}")
-    bulunan = koleksiyon.query(query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
+    bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
     baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
     gecmis = gecmisi_oku(kullanici_id)
-    cevap = cevap_uret(client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=profil)
+    cevap = await asyncio.to_thread(
+        cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=profil
+    )
 
     mesaji_kaydet(kullanici_id, "user", soru)
     mesaji_kaydet(kullanici_id, "model", cevap)
@@ -1486,7 +1489,8 @@ async def _yemek_fotografini_isle(update: Update, context: ContextTypes.DEFAULT_
         )
     )
     try:
-        yanit = client_gemini.models.generate_content(
+        yanit = await asyncio.to_thread(
+            client_gemini.models.generate_content,
             model="gemini-flash-latest",
             contents=[
                 {"role": "user", "parts": [
@@ -1534,10 +1538,12 @@ async def _yemek_fotografini_isle(update: Update, context: ContextTypes.DEFAULT_
             f"nelere dikkat etmeliyim?"
         )
         _, koleksiyon = istemcileri_al()
-        bulunan = koleksiyon.query(query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
+        bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
         baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
         gecmis = gecmisi_oku(kullanici_id)
-        yorum = cevap_uret(client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=profil)
+        yorum = await asyncio.to_thread(
+            cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=profil
+        )
 
         mesaji_kaydet(kullanici_id, "user", soru)
         mesaji_kaydet(kullanici_id, "model", yorum)
@@ -1664,17 +1670,23 @@ async def sabah_mesaji_isi(context: ContextTypes.DEFAULT_TYPE):
             baglanti_bilgisi = strava_baglantisini_getir(kullanici_id)
             if baglanti_bilgisi:
                 try:
-                    access_token = strava_erisim_tokeni_al(baglanti_bilgisi["refresh_token"])
-                    son_aktiviteler = strava_son_aktiviteleri_getir(access_token, kac_tane=1)
+                    access_token = await asyncio.to_thread(
+                        strava_erisim_tokeni_al, baglanti_bilgisi["refresh_token"]
+                    )
+                    son_aktiviteler = await asyncio.to_thread(
+                        strava_son_aktiviteleri_getir, access_token, kac_tane=1
+                    )
                     if son_aktiviteler:
                         strava_ozeti = f"\n\nEn son aktivitem:\n{strava_aktiviteyi_metne_cevir(son_aktiviteler[0])}"
                 except Exception:
                     pass
 
             soru = f"Günaydın koç! Bugün için bana kısa bir motivasyon ve gün planı önerir misin?{strava_ozeti}"
-            bulunan = koleksiyon.query(query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
+            bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
             baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
-            cevap = cevap_uret(client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=profil)
+            cevap = await asyncio.to_thread(
+                cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=profil
+            )
 
             mesaji_kaydet(kullanici_id, "user", soru)
             mesaji_kaydet(kullanici_id, "model", cevap)
@@ -1769,8 +1781,8 @@ async def strava_baglan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kullanici_id = update.effective_user.id
 
     try:
-        access_token = strava_erisim_tokeni_al(refresh_token)
-        aktiviteler = strava_son_aktiviteleri_getir(access_token, kac_tane=1)
+        access_token = await asyncio.to_thread(strava_erisim_tokeni_al, refresh_token)
+        aktiviteler = await asyncio.to_thread(strava_son_aktiviteleri_getir, access_token, kac_tane=1)
         athlete_id = None
         strava_baglantisini_kaydet(kullanici_id, refresh_token, athlete_id)
         if aktiviteler:
@@ -1822,8 +1834,10 @@ async def son_antrenman(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        access_token = strava_erisim_tokeni_al(baglanti_bilgisi["refresh_token"])
-        aktiviteler = strava_son_aktiviteleri_getir(access_token, kac_tane=1)
+        access_token = await asyncio.to_thread(
+            strava_erisim_tokeni_al, baglanti_bilgisi["refresh_token"]
+        )
+        aktiviteler = await asyncio.to_thread(strava_son_aktiviteleri_getir, access_token, kac_tane=1)
         if not aktiviteler:
             await update.message.reply_text("Henüz hiç aktivite bulamadım.")
             return
@@ -1833,10 +1847,10 @@ async def son_antrenman(update: Update, context: ContextTypes.DEFAULT_TYPE):
         yumusak = yumusak_ton_mu(kullanici_id)
 
         soru = f"Az önce bitirdiğim antrenmanı yorumlar mısın?\n\n{aktivite_metni}"
-        bulunan = koleksiyon.query(query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
+        bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
         baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
         gecmis = gecmisi_oku(kullanici_id)
-        cevap = cevap_uret(client_gemini, soru, baglam, gecmis, yumusak=yumusak)
+        cevap = await asyncio.to_thread(cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak)
 
         mesaji_kaydet(kullanici_id, "user", soru)
         mesaji_kaydet(kullanici_id, "model", cevap)
@@ -1862,8 +1876,10 @@ async def strava_ozet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     try:
-        access_token = strava_erisim_tokeni_al(baglanti_bilgisi["refresh_token"])
-        aktiviteler = strava_son_aktiviteleri_getir(access_token, kac_tane=100)
+        access_token = await asyncio.to_thread(
+            strava_erisim_tokeni_al, baglanti_bilgisi["refresh_token"]
+        )
+        aktiviteler = await asyncio.to_thread(strava_son_aktiviteleri_getir, access_token, kac_tane=100)
 
         esik_tarih = datetime.now() - timedelta(days=gun_sayisi)
         secilenler = []
@@ -1898,11 +1914,13 @@ async def strava_ozet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         client_gemini, koleksiyon = istemcileri_al()
         yumusak = yumusak_ton_mu(kullanici_id)
         soru = f"Son {gun_sayisi} günlük antrenman verilerimi değerlendirir misin, trend olarak nasılım?\n\n{ozet_metni}"
-        bulunan = koleksiyon.query(query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
+        bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
         baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
         gecmis = gecmisi_oku(kullanici_id)
         profil = profili_oku(kullanici_id)
-        cevap = cevap_uret(client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=profil)
+        cevap = await asyncio.to_thread(
+            cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=profil
+        )
 
         mesaji_kaydet(kullanici_id, "user", soru)
         mesaji_kaydet(kullanici_id, "model", cevap)
@@ -1931,8 +1949,8 @@ async def strava_kontrol_isi(context: ContextTypes.DEFAULT_TYPE):
 
     for kullanici_id, refresh_token, son_gorulen in tum_baglantilar:
         try:
-            access_token = strava_erisim_tokeni_al(refresh_token)
-            aktiviteler = strava_son_aktiviteleri_getir(access_token, kac_tane=3)
+            access_token = await asyncio.to_thread(strava_erisim_tokeni_al, refresh_token)
+            aktiviteler = await asyncio.to_thread(strava_son_aktiviteleri_getir, access_token, kac_tane=3)
             for aktivite in reversed(aktiviteler):
                 if aktivite["id"] <= (son_gorulen or 0):
                     continue
@@ -1940,10 +1958,10 @@ async def strava_kontrol_isi(context: ContextTypes.DEFAULT_TYPE):
                 aktivite_metni = strava_aktiviteyi_metne_cevir(aktivite)
                 yumusak = yumusak_ton_mu(kullanici_id)
                 soru = f"Az önce şu antrenmanı bitirdim, yorumlar mısın?\n\n{aktivite_metni}"
-                bulunan = koleksiyon.query(query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
+                bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
                 baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
                 gecmis = gecmisi_oku(kullanici_id)
-                cevap = cevap_uret(client_gemini, soru, baglam, gecmis, yumusak=yumusak)
+                cevap = await asyncio.to_thread(cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak)
 
                 mesaji_kaydet(kullanici_id, "user", soru)
                 mesaji_kaydet(kullanici_id, "model", cevap)
@@ -1988,7 +2006,7 @@ async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None)
     kullanici_id = update.effective_user.id
     yumusak = yumusak_ton_mu(kullanici_id)
 
-    bulunan = _hybrid_arama(koleksiyon, soru, KAC_PARCA_GETIRILSIN)
+    bulunan = await asyncio.to_thread(_hybrid_arama, koleksiyon, soru, KAC_PARCA_GETIRILSIN)
     baglam, kaynaklar = "", []
     if bulunan['documents'][0]:
         baglam, kaynaklar = baglami_hazirla(bulunan)
@@ -1996,7 +2014,7 @@ async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None)
     zorla_video_id = context.user_data.get("zorla_video")
     if zorla_video_id:
         try:
-            zorla_sonuc = koleksiyon.get(where={"video_id": zorla_video_id})
+            zorla_sonuc = await asyncio.to_thread(koleksiyon.get, where={"video_id": zorla_video_id})
             if zorla_sonuc and zorla_sonuc.get("documents"):
                 zorla_metin = "\n\n".join(zorla_sonuc["documents"])
                 baglam = (
@@ -2013,8 +2031,8 @@ async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None)
         baglanti_bilgisi = strava_baglantisini_getir(kullanici_id)
         if baglanti_bilgisi:
             try:
-                erisim_tokeni = strava_erisim_tokeni_al(baglanti_bilgisi["refresh_token"])
-                pace_ozeti = strava_kosu_pace_ozeti(erisim_tokeni)
+                erisim_tokeni = await asyncio.to_thread(strava_erisim_tokeni_al, baglanti_bilgisi["refresh_token"])
+                pace_ozeti = await asyncio.to_thread(strava_kosu_pace_ozeti, erisim_tokeni)
                 if pace_ozeti:
                     baglam = (
                         f"[GERÇEK STRAVA VERİSİ — kullanıcının son koşularının gerçek pace "
@@ -2031,11 +2049,12 @@ async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None)
     beslenme_ozeti = beslenme_gunluk_ozet_metni(kullanici_id)
     if beslenme_ozeti:
         profil = (profil + "\n\n" + beslenme_ozeti).strip() if profil else beslenme_ozeti
-    cevap = cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64, gorsel_mime, yumusak, profil)
+    cevap = await asyncio.to_thread(
+        cevap_uret, client_gemini, soru, baglam, gecmis, gorsel_b64, gorsel_mime, yumusak, profil
+    )
 
     mesaji_kaydet(kullanici_id, "user", soru)
     mesaji_kaydet(kullanici_id, "model", cevap)
-    profili_otomatik_guncelle(client_gemini, kullanici_id, soru, cevap)
 
     context.chat_data["son_cevap"] = cevap
     context.chat_data["son_kaynaklar"] = kaynaklar
@@ -2049,9 +2068,13 @@ async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None)
     dugmeler = InlineKeyboardMarkup([dugme_satiri])
     await guvenli_reply(update.message, cevap, reply_markup=dugmeler)
 
+    # Cevap kullanıcıya gönderildikten SONRA, arka planda (bloklamadan)
+    # profili güncelle — kullanıcı bunun bitmesini beklemesin.
+    asyncio.create_task(asyncio.to_thread(profili_otomatik_guncelle, client_gemini, kullanici_id, soru, cevap))
+
     if sesli_cevap_mi(kullanici_id):
         try:
-            ses_verisi = metni_sese_cevir(client_gemini, cevap)
+            ses_verisi = await asyncio.to_thread(metni_sese_cevir, client_gemini, cevap)
             if ses_verisi:
                 await update.message.reply_audio(
                     audio=InputFile(BytesIO(ses_verisi), filename="cevap.wav")
@@ -2104,7 +2127,7 @@ async def ses_geldi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     client_gemini, _ = istemcileri_al()
     dosya = await context.bot.get_file(update.message.voice.file_id)
     ses_bytes = bytes(await dosya.download_as_bytearray())
-    yazi = ses_yaziya_cevir(client_gemini, ses_bytes, "audio/ogg")
+    yazi = await asyncio.to_thread(ses_yaziya_cevir, client_gemini, ses_bytes, "audio/ogg")
     if not yazi:
         await update.message.reply_text("Ses anlaşılamadı, tekrar dener misin?")
         return
@@ -2127,7 +2150,11 @@ async def foto_geldi(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def buton_tiklandi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    try:
+        await query.answer()
+    except Exception as e:
+        print(f"query.answer() başarısız (muhtemelen süresi dolmuş), devam ediliyor: {e}")
+
     client_gemini, _ = istemcileri_al()
     son_cevap = context.chat_data.get("son_cevap", "")
     if not son_cevap:
@@ -2135,7 +2162,7 @@ async def buton_tiklandi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "takvim":
-        etkinlikler = programdan_json_cikar(client_gemini, son_cevap)
+        etkinlikler = await asyncio.to_thread(programdan_json_cikar, client_gemini, son_cevap)
         if not etkinlikler:
             await query.message.reply_text("Bu cevapta takvime çevrilecek bir program bulamadım.")
             return
@@ -2145,7 +2172,7 @@ async def buton_tiklandi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption="📅 Takvim dosyan hazır, Google Takvim'e aktarabilirsin."
         )
     elif query.data == "excel":
-        satirlar = programdan_excel_json_cikar(client_gemini, son_cevap)
+        satirlar = await asyncio.to_thread(programdan_excel_json_cikar, client_gemini, son_cevap)
         if not satirlar:
             await query.message.reply_text("Bu cevapta Excel'e çevrilecek bir program bulamadım.")
             return
