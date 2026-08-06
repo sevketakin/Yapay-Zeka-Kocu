@@ -249,6 +249,7 @@ def _basit_semayi_hazirla():
                 gogus TEXT,
                 bacak TEXT
             );
+            ALTER TABLE vucut_olculeri ADD COLUMN IF NOT EXISTS omuz TEXT;
             ALTER TABLE tg_ayarlar ADD COLUMN IF NOT EXISTS sabah_mesaji BOOLEAN DEFAULT FALSE;
             ALTER TABLE tg_ayarlar ADD COLUMN IF NOT EXISTS olcum_hatirlatma BOOLEAN DEFAULT TRUE;
             ALTER TABLE tg_ayarlar ADD COLUMN IF NOT EXISTS sesli_cevap BOOLEAN DEFAULT FALSE;
@@ -1111,12 +1112,13 @@ async def profil_iptal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ============== VÜCUT ÖLÇÜMLERİ (AYLIK TAKİP) ==============
 OLCUM_SORULARI = [
-    ("kilo", "Kaç kg'sın?"),
-    ("kol", "Kol çevren kaç cm? (pazı, en kalın yerinden)"),
-    ("bel", "Bel çevren kaç cm?"),
-    ("kalca", "Kalça çevren kaç cm?"),
-    ("gogus", "Göğüs çevren kaç cm?"),
-    ("bacak", "Uyluk (bacak) çevren kaç cm?"),
+    ("kilo", "⚖️ Kaç kg'sın? (En doğru sonuç için sabah, aç karnına, tuvaletten sonra tart)"),
+    ("kol", "💪 Kol (pazı) çevren kaç cm? Kolun gevşek/sarkık haldeyken, pazının EN KALIN noktasından mezura ile ölç."),
+    ("omuz", "🧍 Omuz genişliğin kaç cm? Bir omuz ucundan diğer omuz ucuna, en geniş noktadan ölç."),
+    ("gogus", "📏 Göğüs çevren kaç cm? Mezurayı meme ucu hizasından, göğsün en geniş noktasından geçirerek ölç, normal nefes alırken."),
+    ("bel", "📐 Bel çevren kaç cm? Göbek deliği hizasından, nefesini verip rahat dururken ölç (içeri çekmeden)."),
+    ("kalca", "🍑 Kalça çevren kaç cm? Kalçanın EN GENİŞ (en çıkıntılı) noktasından ölç."),
+    ("bacak", "🦵 Uyluk (üst bacak) çevren kaç cm? Kasığın hemen altından, bacağın en kalın noktasından ölç."),
 ]
 
 
@@ -1127,10 +1129,10 @@ def olcumu_kaydet(kullanici_id, cevaplar):
     baglanti.autocommit = True
     imlec = baglanti.cursor()
     imlec.execute(
-        "INSERT INTO vucut_olculeri (kullanici_id, kilo, kol, bel, kalca, gogus, bacak) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-        (kullanici_id, cevaplar.get("kilo"), cevaplar.get("kol"), cevaplar.get("bel"),
-         cevaplar.get("kalca"), cevaplar.get("gogus"), cevaplar.get("bacak")),
+        "INSERT INTO vucut_olculeri (kullanici_id, kilo, kol, omuz, gogus, bel, kalca, bacak) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+        (kullanici_id, cevaplar.get("kilo"), cevaplar.get("kol"), cevaplar.get("omuz"),
+         cevaplar.get("gogus"), cevaplar.get("bel"), cevaplar.get("kalca"), cevaplar.get("bacak")),
     )
     imlec.close()
     baglanti.close()
@@ -1142,7 +1144,7 @@ def son_iki_olcumu_getir(kullanici_id):
     baglanti = psycopg2.connect(DATABASE_URL)
     imlec = baglanti.cursor()
     imlec.execute(
-        "SELECT tarih, kilo, kol, bel, kalca, gogus, bacak FROM vucut_olculeri "
+        "SELECT tarih, kilo, kol, omuz, gogus, bel, kalca, bacak FROM vucut_olculeri "
         "WHERE kullanici_id = %s ORDER BY tarih DESC LIMIT 2",
         (kullanici_id,),
     )
@@ -1158,7 +1160,7 @@ def tum_olcumleri_getir(kullanici_id):
     baglanti = psycopg2.connect(DATABASE_URL)
     imlec = baglanti.cursor()
     imlec.execute(
-        "SELECT tarih, kilo, kol, bel, kalca, gogus, bacak FROM vucut_olculeri "
+        "SELECT tarih, kilo, kol, omuz, gogus, bel, kalca, bacak FROM vucut_olculeri "
         "WHERE kullanici_id = %s ORDER BY tarih ASC",
         (kullanici_id,),
     )
@@ -1176,7 +1178,7 @@ def olcum_ozeti_ve_trend(kullanici_id):
     if not son_ikisi:
         return ""
 
-    alanlar = ["kilo", "kol", "bel", "kalca", "gogus", "bacak"]
+    alanlar = ["kilo", "kol", "omuz", "gogus", "bel", "kalca", "bacak"]
     son = son_ikisi[0]
     satirlar = [f"En son ölçümlerim ({son[0].strftime('%d %B %Y') if hasattr(son[0], 'strftime') else son[0]}):"]
     for i, ad in enumerate(alanlar, start=1):
@@ -1256,8 +1258,8 @@ async def olcum_gecmisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for satir in tumu:
         tarih = satir[0].strftime("%d %B %Y") if hasattr(satir[0], "strftime") else satir[0]
         satirlar.append(
-            f"{tarih}: kilo {satir[1]}, kol {satir[2]}, bel {satir[3]}, "
-            f"kalça {satir[4]}, göğüs {satir[5]}, bacak {satir[6]}"
+            f"{tarih}: kilo {satir[1]}, kol {satir[2]}, omuz {satir[3]}, "
+            f"göğüs {satir[4]}, bel {satir[5]}, kalça {satir[6]}, bacak {satir[7]}"
         )
     await guvenli_reply(update.message, "\n".join(satirlar))
 
