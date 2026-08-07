@@ -60,12 +60,12 @@ GEMINI_MODEL_LISTESI = [
 # verirse otomatik Flash'e düşer. Diğer tüm işler (takvim/excel/profil/
 # yemek/ses) hâlâ GEMINI_MODEL_LISTESI'ni (ucuz Flash) kullanmaya devam
 # ediyor — maliyet sadece en kritik yerde artıyor.
-# NOT: 'gemini-3.1-pro' (preview'sız) test edildi, 404 veriyor — listede
-# YOK, gereksiz başarısız deneme/gecikme yaratmasın diye. Doğrulanan,
-# çalışan model ('gemini-3.1-pro-preview') en başta.
+# NOT: 'gemini-3.1-pro' (preview'sız) VE 'gemini-2.5-pro' test edildi,
+# ikisi de kalıcı olarak 404 veriyor (2.5-pro artık yeni kullanıcılara
+# hiç açılmıyor) — listede YOK, gereksiz başarısız deneme/gecikme
+# yaratmasınlar diye. Doğrulanan, çalışan tek Pro modeli en başta.
 ANA_CEVAP_MODEL_LISTESI = [
     "gemini-3.1-pro-preview",
-    "gemini-2.5-pro",
 ] + GEMINI_MODEL_LISTESI
 
 KAC_PARCA_GETIRILSIN = 25
