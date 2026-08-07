@@ -764,6 +764,19 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
         "birbirleriyle ÇELİŞİYORSA, bunu görmezden gelip birini seçme — "
         "kısaca 'bazı kaynaklar şöyle diyor, bazıları böyle' diye açık "
         "şekilde belirt, sonra kendi önerini sun.\n\n"
+        "📅 'X. GÜN' BELİRSİZLİĞİ KURALI: Kullanıcı bir programın '1. gün', "
+        "'2. gün' gibi NUMARALI bir gününü sorduğunda dikkatli ol — "
+        "kaynaklardaki videolar bazen günleri sayıyla (1. gün, 2. gün...) "
+        "numaralandırıyor, bazen sadece gün ismiyle (Pazartesi, Çarşamba...) "
+        "anlatıyor, ve bu numaralandırma videodan videoya FARKLI/tutarsız "
+        "olabilir (örn. bir videoda '2. gün' dinlenme günü iken başka bir "
+        "haftada farklı anlama gelebilir). Eğer notlarda bu numaraya karşılık "
+        "gelen İÇERİK NET DEĞİLSE ya da hangi gün olduğu belirsizse, tahmin "
+        "ETME — kullanıcıya kısaca sor: 'X. gün derken hangi günü "
+        "kastediyorsun (Pazartesi/Salı/... gibi), ya da kendi antrenman "
+        "sıralamana göre mi soruyorsun?' Notlarda o numara NET ve AÇIK "
+        "şekilde tanımlıysa (örn. video kendisi '2. gün = Salı, dinlenme' "
+        "diyorsa) o zaman güvenle kullan.\n\n"
         "🚨 PACE/TEMPO/HIZ ÖNERİLERİNDE GERÇEK VERİYE DAYAN — GENEL VARSAYIM "
         "YAPMA: Eğer sana '[GERÇEK STRAVA VERİSİ ...]' etiketli, kullanıcının "
         "GERÇEK koşu pace verileri verilmişse, önerini KESİNLİKLE bu gerçek "
@@ -1974,16 +1987,32 @@ async def strava_kontrol_isi(context: ContextTypes.DEFAULT_TYPE):
 
 def _hybrid_arama(koleksiyon, soru, kac_tane):
     """Normal anlamsal aramaya ek olarak, sorudaki net ifadeleri
-    (örn. '5. hafta', '3. gün') KELİME OLARAK da arar ve sonuçları
-    birleştirir. Bu, 'Zone 2' ya da 'X. hafta' gibi çok net ama
-    anlamsal aramanın bazen kaçırdığı ifadeleri yakalamayı sağlar."""
+    (örn. '5. hafta', '3. gün', 'ilk gün', 'üçüncü hafta') KELİME
+    OLARAK da arar ve sonuçları birleştirir. Bu, 'Zone 2' ya da
+    'X. hafta' gibi çok net ama anlamsal aramanın bazen kaçırdığı
+    ifadeleri yakalamayı sağlar."""
     semantik = koleksiyon.query(query_texts=[soru], n_results=kac_tane)
     dokumanlar = list(semantik['documents'][0]) if semantik['documents'][0] else []
     metadatalar = list(semantik['metadatas'][0]) if semantik['metadatas'][0] else []
     gorulen_idler = set(semantik['ids'][0]) if semantik.get('ids') and semantik['ids'][0] else set()
 
     anahtar_ifadeler = re.findall(r"\d+\s*\.\s*(?:hafta|gün|hafta\w*|gün\w*)", soru, flags=re.IGNORECASE)
-    for ifade in anahtar_ifadeler[:2]:
+
+    # Yazıyla ifade edilen sıra sayılarını da rakama çevirip aynı şekilde ara
+    YAZILI_SAYILAR = {
+        "ilk": "1", "birinci": "1", "ikinci": "2", "üçüncü": "3",
+        "dördüncü": "4", "beşinci": "5", "altıncı": "6", "yedinci": "7",
+        "sekizinci": "8",
+    }
+    soru_kucuk = soru.lower()
+    for kelime, rakam in YAZILI_SAYILAR.items():
+        if kelime in soru_kucuk:
+            if "gün" in soru_kucuk or "antrenman" in soru_kucuk:
+                anahtar_ifadeler.append(f"{rakam}. gün")
+            if "hafta" in soru_kucuk:
+                anahtar_ifadeler.append(f"{rakam}. hafta")
+
+    for ifade in anahtar_ifadeler[:3]:
         try:
             anahtar_sonuc = koleksiyon.get(
                 where_document={"$contains": ifade.strip()}, limit=5,
