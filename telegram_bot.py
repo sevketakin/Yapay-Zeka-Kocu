@@ -2187,12 +2187,19 @@ async def buton_tiklandi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("Bu cevap için gösterilecek kaynak yok.")
             return
         kaynak_satirlari = []
-        for k in kaynaklar[:10]:
+        gorulenler = set()
+        for k in kaynaklar:
+            anahtar = k.get("link") or k.get("baslik")
+            if not anahtar or anahtar in gorulenler:
+                continue
+            gorulenler.add(anahtar)
             if k.get("link"):
                 kaynak_satirlari.append(f"🎬 {k['link']}")
             elif k.get("baslik"):
                 kaynak_satirlari.append(f"📜 {k['baslik']}")
-        metin = "🔍 Kullanılan kaynaklar:\n" + "\n".join(kaynak_satirlari)
+            if len(kaynak_satirlari) >= 8:
+                break
+        metin = "🔍 Kullanılan kaynaklar (en alakalı olanlar):\n" + "\n".join(kaynak_satirlari)
         await guvenli_reply(query.message, metin)
 
 
