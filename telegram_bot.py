@@ -76,7 +76,7 @@ ANA_CEVAP_MODEL_LISTESI = [
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL_LISTESI = ["claude-opus-4-8", "claude-sonnet-5"]
 
-KAC_PARCA_GETIRILSIN = 25
+KAC_PARCA_GETIRILSIN = 16
 UYGULAMA_ADI = "Koçum"
 
 STRAVA_CLIENT_ID = os.environ.get("STRAVA_CLIENT_ID", "")
@@ -841,7 +841,7 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
 
         for model_adi in CLAUDE_MODEL_LISTESI:
             try:
-                claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=20.0)
+                claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=45.0)
                 yanit = claude_client.messages.create(
                     model=model_adi,
                     max_tokens=4096,
@@ -2065,10 +2065,10 @@ def _hybrid_arama(koleksiyon, soru, kac_tane):
             if "hafta" in soru_kucuk:
                 anahtar_ifadeler.append(f"{rakam}. hafta")
 
-    for ifade in anahtar_ifadeler[:3]:
+    for ifade in anahtar_ifadeler[:2]:
         try:
             anahtar_sonuc = koleksiyon.get(
-                where_document={"$contains": ifade.strip()}, limit=5,
+                where_document={"$contains": ifade.strip()}, limit=3,
             )
             for i, doc_id in enumerate(anahtar_sonuc.get("ids", [])):
                 if doc_id not in gorulen_idler:
