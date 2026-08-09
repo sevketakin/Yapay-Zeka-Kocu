@@ -74,7 +74,7 @@ ANA_CEVAP_MODEL_LISTESI = [
 # Gemini zincirine (Pro -> Flash) güvenle düşer. ANTHROPIC_API_KEY
 # tanımlı değilse Claude denemesi tamamen atlanır, direkt Gemini kullanılır.
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL_LISTESI = ["claude-opus-4-8", "claude-sonnet-5"]
+CLAUDE_MODEL_LISTESI = ["claude-sonnet-5", "claude-opus-4-8"]
 
 KAC_PARCA_GETIRILSIN = 16
 UYGULAMA_ADI = "Koçum"
