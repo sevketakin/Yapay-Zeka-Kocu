@@ -812,9 +812,14 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
 
     for model_adi in ANA_CEVAP_MODEL_LISTESI:
         try:
+            ayarlar = {"system_instruction": sistem_mesaji}
+            if model_adi == "gemini-3.1-pro-preview":
+                # Pro yoğunsa (503/deadline) uzun uzun beklemeyelim,
+                # 10 saniye içinde cevap gelmezse hızlıca Flash'e düşelim.
+                ayarlar["http_options"] = {"timeout": 10000}  # milisaniye
             yanit = client_gemini.models.generate_content(
                 model=model_adi, contents=contents,
-                config={"system_instruction": sistem_mesaji},
+                config=ayarlar,
             )
             if yanit.text and yanit.text.strip():
                 print(f"✅ CEVAP ÜRETİLDİ: model='{model_adi}'")
