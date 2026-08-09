@@ -10,3 +10,4 @@ asyncpg
 python-telegram-bot
 tzdata
 python-telegram-bot[job-queue]
+anthropic

@@ -21,6 +21,7 @@ Ortam değişkenleri (Railway'de ayarlanacak):
 import os
 import re
 import asyncio
+import anthropic
 import json
 import uuid
 import zipfile
@@ -67,6 +68,13 @@ GEMINI_MODEL_LISTESI = [
 ANA_CEVAP_MODEL_LISTESI = [
     "gemini-3.1-pro-preview",
 ] + GEMINI_MODEL_LISTESI
+
+# Claude entegrasyonu — ana cevap için ÖNCE Claude denenir (Opus -> Sonnet),
+# ikisi de başarısız olursa (Anthropic tamamen çökse bile) yukarıdaki
+# Gemini zincirine (Pro -> Flash) güvenle düşer. ANTHROPIC_API_KEY
+# tanımlı değilse Claude denemesi tamamen atlanır, direkt Gemini kullanılır.
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+CLAUDE_MODEL_LISTESI = ["claude-opus-4-8", "claude-sonnet-5"]
 
 KAC_PARCA_GETIRILSIN = 25
 UYGULAMA_ADI = "Koçum"
@@ -810,6 +818,46 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
         parts.append({"inline_data": {"mime_type": gorsel_mime, "data": gorsel_b64}})
     contents.append({"role": "user", "parts": parts})
 
+    # 1) ÖNCE Claude'u dene (Opus -> Sonnet). Anthropic anahtarı yoksa
+    # ya da ikisi de başarısız olursa, sessizce Gemini zincirine düşülür.
+    if ANTHROPIC_API_KEY:
+        claude_mesajlari = []
+        for m in gecmis:
+            rol = "assistant" if m.get("role") == "model" else "user"
+            metin = ""
+            for p in m.get("parts", []):
+                if "text" in p:
+                    metin += p["text"]
+            if metin:
+                claude_mesajlari.append({"role": rol, "content": metin})
+
+        claude_icerik = [{"type": "text", "text": kullanici_mesaji}]
+        if gorsel_b64:
+            claude_icerik.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": gorsel_mime or "image/jpeg", "data": gorsel_b64},
+            })
+        claude_mesajlari.append({"role": "user", "content": claude_icerik})
+
+        for model_adi in CLAUDE_MODEL_LISTESI:
+            try:
+                claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=20.0)
+                yanit = claude_client.messages.create(
+                    model=model_adi,
+                    max_tokens=4096,
+                    system=sistem_mesaji,
+                    messages=claude_mesajlari,
+                )
+                metin = "".join(b.text for b in yanit.content if hasattr(b, "text"))
+                if metin.strip():
+                    print(f"✅ CEVAP ÜRETİLDİ: model='{model_adi}' (Claude)")
+                    return metin
+            except Exception as e:
+                print(f"❌ '{model_adi}' (Claude) başarısız oldu, sıradakini deniyorum. Hata: {e}")
+                continue
+        print("⚠️ Tüm Claude denemeleri başarısız, Gemini zincirine düşülüyor.")
+
+    # 2) Claude devre dışıysa ya da tamamen başarısız olduysa Gemini'ye düş
     for model_adi in ANA_CEVAP_MODEL_LISTESI:
         try:
             ayarlar = {"system_instruction": sistem_mesaji}
