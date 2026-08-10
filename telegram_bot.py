@@ -74,7 +74,7 @@ ANA_CEVAP_MODEL_LISTESI = [
 # Gemini zincirine (Pro -> Flash) güvenle düşer. ANTHROPIC_API_KEY
 # tanımlı değilse Claude denemesi tamamen atlanır, direkt Gemini kullanılır.
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL_LISTESI = ["claude-sonnet-5", "claude-opus-4-8"]
+CLAUDE_MODEL_LISTESI = ["claude-opus-4-8", "claude-sonnet-5"]
 
 KAC_PARCA_GETIRILSIN = 16
 UYGULAMA_ADI = "Koçum"
@@ -271,6 +271,10 @@ def _basit_semayi_hazirla():
                 tahmini_protein INTEGER,
                 tahmini_karbonhidrat INTEGER,
                 tahmini_yag INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS intervals_baglantilar (
+                kullanici_id BIGINT PRIMARY KEY,
+                api_key TEXT NOT NULL
             );
         """)
         imlec.close()
@@ -533,6 +537,85 @@ def _kosu_sorusu_mu(soru):
     return any(k in soru_kucuk for k in _KOSU_ANAHTAR_KELIMELER)
 
 
+# ============== INTERVALS.ICU ENTEGRASYONU (UYKU/HRV) ==============
+def intervals_baglantisini_kaydet(kullanici_id, api_key):
+    if not DATABASE_URL:
+        return
+    baglanti = psycopg2.connect(DATABASE_URL)
+    baglanti.autocommit = True
+    imlec = baglanti.cursor()
+    imlec.execute(
+        "INSERT INTO intervals_baglantilar (kullanici_id, api_key) VALUES (%s, %s) "
+        "ON CONFLICT (kullanici_id) DO UPDATE SET api_key = %s",
+        (kullanici_id, api_key, api_key),
+    )
+    imlec.close()
+    baglanti.close()
+
+
+def intervals_api_key_getir(kullanici_id):
+    if not DATABASE_URL:
+        return None
+    baglanti = psycopg2.connect(DATABASE_URL)
+    imlec = baglanti.cursor()
+    imlec.execute("SELECT api_key FROM intervals_baglantilar WHERE kullanici_id = %s", (kullanici_id,))
+    satir = imlec.fetchone()
+    imlec.close()
+    baglanti.close()
+    return satir[0] if satir else None
+
+
+def intervals_uyku_verisi_getir(api_key, tarih=None):
+    """Belirtilen tarihin (varsayılan bugün) uyku/HRV/toparlanma verisini
+    çeker. athlete id '0' kullanılıyor — API anahtarına göre otomatik
+    kendi hesabını bulur, ayrıca sporcu ID'si sormaya gerek kalmıyor."""
+    if not tarih:
+        tarih = _turkiye_simdi().strftime("%Y-%m-%d")
+    yanit = requests.get(
+        f"https://intervals.icu/api/v1/athlete/0/wellness/{tarih}",
+        auth=("API_KEY", api_key),
+        timeout=15,
+    )
+    yanit.raise_for_status()
+    return yanit.json()
+
+
+def intervals_ozet_metni(veri):
+    if not veri:
+        return ""
+    uyku_sn = veri.get("sleepSecs") or veri.get("sleep_secs")
+    uyku_skoru = veri.get("sleepScore") or veri.get("sleep_score")
+    dinlenik_nabiz = veri.get("restingHR") or veri.get("resting_hr")
+    hrv = veri.get("hrv")
+    yorgunluk = veri.get("fatigue")
+    agri = veri.get("soreness")
+    stres = veri.get("stress")
+    hazirlik = veri.get("readiness")
+
+    satirlar = ["Bugünkü uyku/toparlanma verilerim (Huawei Band'den):"]
+    if uyku_sn:
+        saat = uyku_sn / 3600
+        satirlar.append(f"- Uyku süresi: {saat:.1f} saat")
+    if uyku_skoru:
+        satirlar.append(f"- Uyku skoru: {uyku_skoru}")
+    if dinlenik_nabiz:
+        satirlar.append(f"- Dinlenik nabız: {dinlenik_nabiz}")
+    if hrv:
+        satirlar.append(f"- HRV: {hrv}")
+    if yorgunluk:
+        satirlar.append(f"- Yorgunluk: {yorgunluk}/5")
+    if agri:
+        satirlar.append(f"- Kas ağrısı: {agri}/5")
+    if stres:
+        satirlar.append(f"- Stres: {stres}")
+    if hazirlik:
+        satirlar.append(f"- Hazırlık (readiness): {hazirlik}")
+
+    if len(satirlar) == 1:
+        return ""  # hiçbir veri gelmemiş
+    return "\n".join(satirlar)
+
+
 # ============== KALICI KULLANICI PROFİLİ ==============
 def profili_oku(kullanici_id):
     if not DATABASE_URL:
@@ -753,7 +836,11 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
         "3) PACE/TEMPO: '[GERÇEK STRAVA VERİSİ...]' verilmişse öneriyi "
         "buna dayandır. Kilo/boy gibi genel özelliklerden soyut pace "
         "tahmini ('100 kg birisin, böyle koşarsın' gibi) ASLA uydurma — "
-        "veri yoksa sor.\n\n"
+        "veri yoksa sor.\n"
+        "4) UYKU/TOPARLANMA: 'Bugünkü uyku/toparlanma verilerim' notu "
+        "varsa, antrenman önerisini buna göre uyarla (örn. uyku kötüyse "
+        "hafiflet/dinlenme öner). Bu veri yoksa uyku hakkında tahmin "
+        "yürütme, sadece genel tavsiye ver.\n\n"
         "📅 TARİH ALGISI: ÖNCEKİ MESAJLAR'daki [BUGÜN]/[DÜN]/[X gün önce] "
         "etiketlerine uy — DÜN'kü bir olayı ('bugün doğum günüm' gibi) şu "
         "anki bugünmüş gibi ele alma.\n\n"
@@ -972,6 +1059,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔊 Sesli cevap:\n"
         f"/sesli_cevap_ac — cevapları sesli de al\n"
         f"/sesli_cevap_kapat — kapat\n\n"
+        f"😴 Uyku/Toparlanma (Huawei Band):\n"
+        f"/intervals_baglan <api_key> — Intervals.icu hesabını bağla\n"
+        f"/uyku_durumu — bugünkü uyku/HRV verini yorumlat\n\n"
         f"🏃 Strava:\n"
         f"/strava_baglan <token> — hesabını bağla\n"
         f"/son_antrenman — son aktiviteni yorumlat\n"
@@ -1452,6 +1542,65 @@ async def sesli_cevap_kapat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Sesli cevaplar kapatıldı, sadece yazı ile devam.")
 
 
+async def intervals_baglan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kullanım: /intervals_baglan <api_key>
+    Intervals.icu → Settings → Developer Settings'ten alınan API anahtarı."""
+    if not context.args:
+        await update.message.reply_text(
+            "Kullanım: /intervals_baglan <api_key>\n\n"
+            "intervals.icu → Settings → Developer Settings kısmından "
+            "API anahtarını alıp buraya yapıştır."
+        )
+        return
+
+    api_key = context.args[0]
+    kullanici_id = update.effective_user.id
+
+    try:
+        veri = await asyncio.to_thread(intervals_uyku_verisi_getir, api_key)
+        intervals_baglantisini_kaydet(kullanici_id, api_key)
+        await update.message.reply_text(
+            "✅ Intervals.icu bağlandı! Artık uyku/HRV verilerini "
+            "sabah mesajlarında ve isteğinde kullanabileceğim."
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Bağlantı başarısız: {e}")
+
+
+async def uyku_durumu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kullanici_id = update.effective_user.id
+    api_key = intervals_api_key_getir(kullanici_id)
+    if not api_key:
+        await update.message.reply_text(
+            "Intervals.icu hesabın bağlı değil. Bağlamak için /intervals_baglan yaz."
+        )
+        return
+
+    try:
+        veri = await asyncio.to_thread(intervals_uyku_verisi_getir, api_key)
+        ozet = intervals_ozet_metni(veri)
+        if not ozet:
+            await update.message.reply_text("Bugün için henüz uyku/HRV verisi gelmemiş.")
+            return
+
+        client_gemini, koleksiyon = istemcileri_al()
+        yumusak = yumusak_ton_mu(kullanici_id)
+        soru = f"Bugünkü uyku/toparlanma verilerimi yorumlar mısın, antrenmanımı buna göre ayarlamalı mıyım?\n\n{ozet}"
+        bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
+        baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
+        gecmis = gecmisi_oku(kullanici_id)
+        profil = profili_oku(kullanici_id)
+        cevap = await asyncio.to_thread(
+            cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=profil
+        )
+
+        mesaji_kaydet(kullanici_id, "user", soru)
+        mesaji_kaydet(kullanici_id, "model", cevap)
+        await guvenli_reply(update.message, cevap)
+    except Exception as e:
+        await update.message.reply_text(f"Uyku verisi alınırken hata: {e}")
+
+
 # ============== BESLENME TAKİBİ (FOTOĞRAFLI) ==============
 def beslenme_kaydet(kullanici_id, aciklama, kalori, protein, karbonhidrat, yag):
     if not DATABASE_URL:
@@ -1713,7 +1862,19 @@ async def sabah_mesaji_isi(context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
 
-            soru = f"Günaydın koç! Bugün için bana kısa bir motivasyon ve gün planı önerir misin?{strava_ozeti}"
+            uyku_ozeti = ""
+            intervals_key = intervals_api_key_getir(kullanici_id)
+            if intervals_key:
+                try:
+                    uyku_verisi = await asyncio.to_thread(intervals_uyku_verisi_getir, intervals_key)
+                    uyku_metni = intervals_ozet_metni(uyku_verisi)
+                    if uyku_metni:
+                        uyku_ozeti = f"\n\n{uyku_metni}"
+                except Exception:
+                    pass
+
+            soru = (f"Günaydın koç! Bugün için bana kısa bir motivasyon ve gün planı "
+                    f"önerir misin?{strava_ozeti}{uyku_ozeti}")
             bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
             baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
             cevap = await asyncio.to_thread(
@@ -2414,6 +2575,8 @@ def main():
     app.add_handler(CommandHandler("sesli_cevap_ac", sesli_cevap_ac))
     app.add_handler(CommandHandler("sesli_cevap_kapat", sesli_cevap_kapat))
     app.add_handler(CommandHandler("yemek_ekle", yemek_ekle))
+    app.add_handler(CommandHandler("intervals_baglan", intervals_baglan))
+    app.add_handler(CommandHandler("uyku_durumu", uyku_durumu))
     app.add_handler(CommandHandler("beslenme_ozet", beslenme_ozet))
     app.add_handler(CommandHandler("yemek_duzelt", yemek_duzelt))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_geldi))
