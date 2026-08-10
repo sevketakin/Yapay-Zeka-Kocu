@@ -479,8 +479,9 @@ def strava_aktiviteyi_metne_cevir(aktivite):
     yukseklik = aktivite.get("total_elevation_gain")
     tarih = aktivite.get("start_date_local", "")
 
-    satirlar = [f"Aktivite: {isim} ({tur})", f"Tarih: {tarih}",
-                f"Mesafe: {mesafe_km:.2f} km", f"Süre: {sure_dk:.0f} dakika"]
+    satirlar = [f"Aktivite: {isim} ({tur})", f"Tarih: {tarih}", f"Süre: {sure_dk:.0f} dakika"]
+    if mesafe_km > 0:
+        satirlar.append(f"Mesafe: {mesafe_km:.2f} km")
     if ort_nabiz:
         satirlar.append(f"Ortalama nabız: {ort_nabiz:.0f}")
     if yukseklik:
@@ -535,6 +536,7 @@ def strava_kosu_pace_ozeti(access_token, kac_tane=8):
 _KOSU_ANAHTAR_KELIMELER = [
     "pace", "tempo", "interval", "koşu hız", "km/saat", "dakika/km",
     "dk/km", "hangi hızla", "ne hızla", "koşu antrenman",
+    "koş",  # kök eşleşme: koşu, koşacağım, koşmalı, koşarken, koşuyorum, vb.
 ]
 
 
