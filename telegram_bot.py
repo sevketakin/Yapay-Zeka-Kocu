@@ -276,6 +276,7 @@ def _basit_semayi_hazirla():
                 kullanici_id BIGINT PRIMARY KEY,
                 api_key TEXT NOT NULL
             );
+            ALTER TABLE intervals_baglantilar ADD COLUMN IF NOT EXISTS son_gorulen_aktivite_id TEXT DEFAULT '';
             CREATE TABLE IF NOT EXISTS antrenman_gunlugu (
                 id SERIAL PRIMARY KEY,
                 kullanici_id BIGINT NOT NULL,
@@ -618,6 +619,66 @@ def intervals_ozet_metni(veri):
         satirlar.append(f"- Stres: {stres}")
     if hazirlik:
         satirlar.append(f"- Hazırlık (readiness): {hazirlik}")
+
+    return "\n".join(satirlar) if len(satirlar) > 1 else ""
+
+
+def intervals_aktiviteleri_getir(api_key, gun_sayisi=7):
+    """Intervals.icu'daki tamamlanmış aktiviteleri (Huawei native
+    bağlantısından gelenler dahil — ağırlık antrenmanı gibi Strava'nın
+    yakalayamadığı türler burada olabilir) çeker."""
+    bugun = _turkiye_simdi().date()
+    baslangic = bugun - timedelta(days=gun_sayisi)
+    yanit = requests.get(
+        "https://intervals.icu/api/v1/athlete/0/activities",
+        auth=("API_KEY", api_key),
+        params={"oldest": baslangic.isoformat(), "newest": bugun.isoformat()},
+        timeout=15,
+    )
+    yanit.raise_for_status()
+    return yanit.json()
+
+
+def intervals_aktiviteyi_metne_cevir(aktivite):
+    isim = aktivite.get("name", "Aktivite")
+    tur = aktivite.get("type", "")
+    mesafe_km = (aktivite.get("distance", 0) or 0) / 1000
+    sure_dk = (aktivite.get("moving_time", 0) or 0) / 60
+    ort_nabiz = aktivite.get("icu_average_heart_rate") or aktivite.get("average_heartrate")
+    tarih = aktivite.get("start_date_local", "")
+
+    satirlar = [f"Aktivite: {isim} ({tur})", f"Tarih: {tarih}", f"Süre: {sure_dk:.0f} dakika"]
+    if mesafe_km > 0:
+        satirlar.append(f"Mesafe: {mesafe_km:.2f} km")
+    if ort_nabiz:
+        satirlar.append(f"Ortalama nabız: {ort_nabiz:.0f}")
+    return "\n".join(satirlar)
+
+
+def intervals_son_gorulen_getir(kullanici_id):
+    if not DATABASE_URL:
+        return ""
+    baglanti = psycopg2.connect(DATABASE_URL)
+    imlec = baglanti.cursor()
+    imlec.execute("SELECT son_gorulen_aktivite_id FROM intervals_baglantilar WHERE kullanici_id = %s", (kullanici_id,))
+    satir = imlec.fetchone()
+    imlec.close()
+    baglanti.close()
+    return satir[0] if satir and satir[0] else ""
+
+
+def intervals_son_gorulen_guncelle(kullanici_id, aktivite_id):
+    if not DATABASE_URL:
+        return
+    baglanti = psycopg2.connect(DATABASE_URL)
+    baglanti.autocommit = True
+    imlec = baglanti.cursor()
+    imlec.execute(
+        "UPDATE intervals_baglantilar SET son_gorulen_aktivite_id = %s WHERE kullanici_id = %s",
+        (str(aktivite_id), kullanici_id),
+    )
+    imlec.close()
+    baglanti.close()
 
     if len(satirlar) == 1:
         return ""  # hiçbir veri gelmemiş
@@ -2141,23 +2202,44 @@ async def video_var_mi(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def son_antrenman(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kullanici_id = update.effective_user.id
-    baglanti_bilgisi = strava_baglantisini_getir(kullanici_id)
-    if not baglanti_bilgisi:
+    strava_baglanti = strava_baglantisini_getir(kullanici_id)
+    intervals_key = intervals_api_key_getir(kullanici_id)
+
+    if not strava_baglanti and not intervals_key:
         await update.message.reply_text(
-            "Strava hesabın bağlı değil. Bağlamak için /strava_baglan yaz."
+            "Hiçbir hesabın bağlı değil. /strava_baglan ya da /intervals_baglan ile bağla."
         )
         return
 
-    try:
-        access_token = await asyncio.to_thread(
-            strava_erisim_tokeni_al, baglanti_bilgisi["refresh_token"]
-        )
-        aktiviteler = await asyncio.to_thread(strava_son_aktiviteleri_getir, access_token, kac_tane=1)
-        if not aktiviteler:
-            await update.message.reply_text("Henüz hiç aktivite bulamadım.")
-            return
+    adaylar = []  # (tarih_str, aktivite_metni)
 
-        aktivite_metni = strava_aktiviteyi_metne_cevir(aktiviteler[0])
+    if strava_baglanti:
+        try:
+            access_token = await asyncio.to_thread(strava_erisim_tokeni_al, strava_baglanti["refresh_token"])
+            aktiviteler = await asyncio.to_thread(strava_son_aktiviteleri_getir, access_token, kac_tane=1)
+            if aktiviteler:
+                adaylar.append((aktiviteler[0].get("start_date_local", ""), strava_aktiviteyi_metne_cevir(aktiviteler[0])))
+        except Exception as e:
+            print(f"Strava son_antrenman hatası: {e}")
+
+    if intervals_key:
+        try:
+            aktiviteler = await asyncio.to_thread(intervals_aktiviteleri_getir, intervals_key, 7)
+            if aktiviteler:
+                en_son = sorted(aktiviteler, key=lambda a: a.get("start_date_local", ""), reverse=True)[0]
+                adaylar.append((en_son.get("start_date_local", ""), intervals_aktiviteyi_metne_cevir(en_son)))
+        except Exception as e:
+            print(f"Intervals.icu son_antrenman hatası: {e}")
+
+    if not adaylar:
+        await update.message.reply_text("Henüz hiç aktivite bulamadım.")
+        return
+
+    # İki kaynaktan da veri geldiyse, tarihi en YAKIN (en güncel) olanı kullan
+    adaylar.sort(key=lambda x: x[0], reverse=True)
+    aktivite_metni = adaylar[0][1]
+
+    try:
         client_gemini, koleksiyon = istemcileri_al()
         yumusak = yumusak_ton_mu(kullanici_id)
 
@@ -2285,6 +2367,50 @@ async def strava_kontrol_isi(context: ContextTypes.DEFAULT_TYPE):
                 strava_son_gorulen_guncelle(kullanici_id, aktivite["id"])
         except Exception as e:
             print(f"Strava kontrol hatası (kullanıcı {kullanici_id}): {e}")
+
+
+async def intervals_kontrol_isi(context: ContextTypes.DEFAULT_TYPE):
+    """strava_kontrol_isi ile AYNI mantık — ama Intervals.icu için.
+    Huawei'nin native Intervals.icu bağlantısı, ağırlık antrenmanı gibi
+    Strava'nın yakalayamadığı türleri de yakalıyor, bu yüzden ayrı
+    bir kontrol döngüsü gerekiyor."""
+    if not DATABASE_URL:
+        return
+    try:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        imlec = baglanti.cursor()
+        imlec.execute("SELECT kullanici_id, api_key, son_gorulen_aktivite_id FROM intervals_baglantilar")
+        tum_baglantilar = imlec.fetchall()
+        imlec.close()
+        baglanti.close()
+    except Exception:
+        return
+
+    client_gemini, koleksiyon = istemcileri_al()
+
+    for kullanici_id, api_key, son_gorulen in tum_baglantilar:
+        try:
+            aktiviteler = await asyncio.to_thread(intervals_aktiviteleri_getir, api_key, 3)
+            for aktivite in reversed(aktiviteler):
+                aktivite_id = str(aktivite.get("id", ""))
+                if not aktivite_id or aktivite_id == son_gorulen:
+                    continue
+
+                aktivite_metni = intervals_aktiviteyi_metne_cevir(aktivite)
+                yumusak = yumusak_ton_mu(kullanici_id)
+                soru = f"Az önce şu antrenmanı bitirdim, yorumlar mısın?\n\n{aktivite_metni}"
+                bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
+                baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
+                gecmis = gecmisi_oku(kullanici_id)
+                cevap = await asyncio.to_thread(cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak)
+
+                mesaji_kaydet(kullanici_id, "user", soru)
+                mesaji_kaydet(kullanici_id, "model", cevap)
+
+                await guvenli_send_message(context.bot, kullanici_id, f"🏋️ Yeni antrenman algılandı (Intervals.icu)!\n\n{cevap}")
+                intervals_son_gorulen_guncelle(kullanici_id, aktivite_id)
+        except Exception as e:
+            print(f"Intervals.icu kontrol hatası (kullanıcı {kullanici_id}): {e}")
 
 
 def _hybrid_arama(koleksiyon, soru, kac_tane):
@@ -2716,6 +2842,7 @@ def main():
     # olup olmadığını kontrol eder — her kullanıcıya SADECE KENDİ verisi gider.
     if app.job_queue:
         app.job_queue.run_repeating(strava_kontrol_isi, interval=900, first=30)
+        app.job_queue.run_repeating(intervals_kontrol_isi, interval=900, first=45)
 
         # Her sabah 07:00'de (Türkiye saati), /sabah_ac demiş kullanıcılara
         # otomatik, kişisel bir günaydın mesajı gönderir.
