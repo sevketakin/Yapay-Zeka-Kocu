@@ -276,6 +276,12 @@ def _basit_semayi_hazirla():
                 kullanici_id BIGINT PRIMARY KEY,
                 api_key TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS antrenman_gunlugu (
+                id SERIAL PRIMARY KEY,
+                kullanici_id BIGINT NOT NULL,
+                tarih DATE DEFAULT CURRENT_DATE,
+                aciklama TEXT NOT NULL
+            );
         """)
         imlec.close()
         baglanti.close()
@@ -674,6 +680,80 @@ def profili_otomatik_guncelle(client_gemini, kullanici_id, soru, cevap):
         print(f"Profil güncellenirken hata: {e}")
 
 
+# ============== ANTRENMAN GÜNLÜĞÜ (KISA, KALICI, GÜNLÜK KAYIT) ==============
+def antrenman_kaydet(kullanici_id, aciklama):
+    if not DATABASE_URL:
+        return
+    baglanti = psycopg2.connect(DATABASE_URL)
+    baglanti.autocommit = True
+    imlec = baglanti.cursor()
+    imlec.execute(
+        "INSERT INTO antrenman_gunlugu (kullanici_id, aciklama) VALUES (%s, %s)",
+        (kullanici_id, aciklama),
+    )
+    imlec.close()
+    baglanti.close()
+
+
+def antrenman_gunlugu_ozeti(kullanici_id, gun_sayisi=4):
+    """Son birkaç günün antrenman özetini kısa metin olarak döndürür —
+    konuşma geçmişi ne kadar dolu olursa olsun, 'dün ne yaptık' sorusuna
+    HER ZAMAN doğru cevap verilebilmesi için."""
+    if not DATABASE_URL:
+        return ""
+    baglanti = psycopg2.connect(DATABASE_URL)
+    imlec = baglanti.cursor()
+    imlec.execute(
+        "SELECT tarih, aciklama FROM antrenman_gunlugu WHERE kullanici_id = %s "
+        "AND tarih >= CURRENT_DATE - INTERVAL '%s days' ORDER BY tarih DESC, id DESC",
+        (kullanici_id, gun_sayisi),
+    )
+    satirlar = imlec.fetchall()
+    imlec.close()
+    baglanti.close()
+    if not satirlar:
+        return ""
+
+    bugun = _turkiye_simdi().date()
+    metin_satirlari = ["Son günlerin GERÇEK antrenman günlüğüm (bu kayıtlara güven, tahmin etme):"]
+    for tarih, aciklama in satirlar:
+        fark = (bugun - tarih).days
+        if fark == 0:
+            etiket = "BUGÜN"
+        elif fark == 1:
+            etiket = "DÜN"
+        else:
+            etiket = f"{fark} gün önce"
+        metin_satirlari.append(f"- {etiket} ({tarih.strftime('%d.%m')}): {aciklama}")
+    return "\n".join(metin_satirlari)
+
+
+def antrenman_gunlugunu_otomatik_guncelle(client_gemini, kullanici_id, soru, cevap):
+    """profili_otomatik_guncelle'e paralel çalışır — bu sefer 'kalıcı
+    profil bilgisi' değil, 'bugün/dün YAPILAN spesifik bir antrenman'
+    var mı diye bakar, varsa kısa bir günlük satırı olarak kaydeder."""
+    talimat = (
+        "Aşağıda bir kullanıcı ile antrenörü arasındaki SON mesaj çifti var. "
+        "Kullanıcı GERÇEKTEN YAPTIĞI/TAMAMLADIĞI bir antrenmandan (koşu, "
+        "kuvvet antrenmanı vb.) bahsediyorsa, bunu TEK SATIRLIK kısa bir "
+        "günlük kaydı olarak özetle (örn. 'Bacak günü yaptı: Squat, RDL, "
+        "BSS' ya da '6. hafta 1. antrenmanını (piramit koşu) tamamladı'). "
+        "Sadece GERÇEKTEN YAPILDIĞI belirtilen antrenmanları kaydet, "
+        "PLANLANAN/önerilen ama henüz yapılmamış antrenmanları YAZMA. "
+        "Eğer böyle bir şey yoksa SADECE 'YOK' yaz.\n\n"
+        f"SON MESAJLAR:\nKullanıcı: {soru}\nAntrenör: {cevap}"
+    )
+    try:
+        yanit = client_gemini.models.generate_content(
+            model="gemini-flash-latest", contents=talimat,
+        )
+        sonuc = (yanit.text or "").strip()
+        if sonuc and "YOK" != sonuc.upper() and len(sonuc) > 5:
+            antrenman_kaydet(kullanici_id, sonuc)
+    except Exception as e:
+        print(f"Antrenman günlüğü güncellenirken hata: {e}")
+
+
 # ============== TARİH/SAAT ==============
 def _turkiye_simdi():
     try:
@@ -824,11 +904,14 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
         "🚨 TEMEL KURAL — GERÇEK VERİYE DAYAN, UYDURMA: Aşağıdaki üç "
         "durumda ASLA tahmin/uydurma yapma, sadece verilen gerçek bilgiyi "
         "kullan, yoksa dürüstçe 'elimde net yok' de:\n"
-        "1) KİŞİSEL GEÇMİŞ: 'geçen hafta ne yaptık', 'hatırlıyor musun' "
-        "gibi sorularda SADECE ÖNCEKİ MESAJLAR'da, '📋 KALICI BİLGİLER'de "
-        "ya da '[GERÇEK KİŞİSEL GEÇMİŞ...]' etiketli notlarda GERÇEKTEN "
-        "yazanı kullan. '[Genel video içeriği...]' notları BAŞKA "
-        "insanların hikayeleri, asla kullanıcınınmış gibi anlatma.\n"
+        "1) KİŞİSEL GEÇMİŞ: 'geçen hafta ne yaptık', 'hatırlıyor musun', "
+        "'dün ne yaptık' gibi sorularda SADECE ÖNCEKİ MESAJLAR'da, "
+        "'📋 KALICI BİLGİLER'de, 'Son günlerin GERÇEK antrenman günlüğüm...' "
+        "notunda ya da '[GERÇEK KİŞİSEL GEÇMİŞ...]' etiketli notlarda "
+        "GERÇEKTEN yazanı kullan — antrenman günlüğü notu varsa buna "
+        "TAM GÜVEN, bu gerçek ve doğrulanmış bir kayıt. '[Genel video "
+        "içeriği...]' notları BAŞKA insanların hikayeleri, asla "
+        "kullanıcınınmış gibi anlatma.\n"
         "2) SPESİFİK PROGRAM/İÇERİK: Bir programın (örn. '8 haftada 5K') "
         "tam hafta/gün detayını sorduğunda, SADECE notlarda gerçekten "
         "yazıyorsa kesin bilgi ver. Yoksa 'genel mantık şöyle ama tam "
@@ -1082,7 +1165,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/sesli_cevap_kapat — kapat\n\n"
         f"😴 Uyku/Toparlanma (Huawei Band):\n"
         f"/intervals_baglan <api_key> — Intervals.icu hesabını bağla\n"
-        f"/uyku_durumu — bugünkü uyku/HRV verini yorumlat\n\n"
+        f"/uyku_durumu — bugünkü uyku/HRV verini yorumlat\n"
+        f"/antrenman_gecmisi [gün] — son antrenmanlarının günlüğü (varsayılan 14 gün)\n\n"
         f"🏃 Strava:\n"
         f"/strava_baglan <token> — hesabını bağla\n"
         f"/son_antrenman — son aktiviteni yorumlat\n"
@@ -1620,6 +1704,21 @@ async def uyku_durumu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await guvenli_reply(update.message, cevap)
     except Exception as e:
         await update.message.reply_text(f"Uyku verisi alınırken hata: {e}")
+
+
+async def antrenman_gecmisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kullanici_id = update.effective_user.id
+    gun_sayisi = 14
+    if context.args:
+        try:
+            gun_sayisi = int(context.args[0])
+        except ValueError:
+            pass
+    ozet = antrenman_gunlugu_ozeti(kullanici_id, gun_sayisi=gun_sayisi)
+    if not ozet:
+        await update.message.reply_text("Bu dönemde kayıtlı bir antrenman günlüğü bulamadım.")
+        return
+    await guvenli_reply(update.message, "📓 " + ozet)
 
 
 # ============== BESLENME TAKİBİ (FOTOĞRAFLI) ==============
@@ -2279,6 +2378,9 @@ async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None)
     beslenme_ozeti = beslenme_gunluk_ozet_metni(kullanici_id)
     if beslenme_ozeti:
         profil = (profil + "\n\n" + beslenme_ozeti).strip() if profil else beslenme_ozeti
+    antrenman_ozeti = antrenman_gunlugu_ozeti(kullanici_id)
+    if antrenman_ozeti:
+        profil = (profil + "\n\n" + antrenman_ozeti).strip() if profil else antrenman_ozeti
     cevap = await asyncio.to_thread(
         cevap_uret, client_gemini, soru, baglam, gecmis, gorsel_b64, gorsel_mime, yumusak, profil
     )
@@ -2301,6 +2403,7 @@ async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None)
     # Cevap kullanıcıya gönderildikten SONRA, arka planda (bloklamadan)
     # profili güncelle — kullanıcı bunun bitmesini beklemesin.
     asyncio.create_task(asyncio.to_thread(profili_otomatik_guncelle, client_gemini, kullanici_id, soru, cevap))
+    asyncio.create_task(asyncio.to_thread(antrenman_gunlugunu_otomatik_guncelle, client_gemini, kullanici_id, soru, cevap))
 
     if sesli_cevap_mi(kullanici_id):
         try:
@@ -2598,6 +2701,7 @@ def main():
     app.add_handler(CommandHandler("yemek_ekle", yemek_ekle))
     app.add_handler(CommandHandler("intervals_baglan", intervals_baglan))
     app.add_handler(CommandHandler("uyku_durumu", uyku_durumu))
+    app.add_handler(CommandHandler("antrenman_gecmisi", antrenman_gecmisi))
     app.add_handler(CommandHandler("beslenme_ozet", beslenme_ozet))
     app.add_handler(CommandHandler("yemek_duzelt", yemek_duzelt))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_geldi))
