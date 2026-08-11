@@ -276,7 +276,11 @@ def _basit_semayi_hazirla():
                 kullanici_id BIGINT PRIMARY KEY,
                 api_key TEXT NOT NULL
             );
-            ALTER TABLE intervals_baglantilar ADD COLUMN IF NOT EXISTS son_gorulen_aktivite_id TEXT DEFAULT '';
+            CREATE TABLE IF NOT EXISTS intervals_bildirilen_aktiviteler (
+                kullanici_id BIGINT NOT NULL,
+                aktivite_id TEXT NOT NULL,
+                PRIMARY KEY (kullanici_id, aktivite_id)
+            );
             CREATE TABLE IF NOT EXISTS antrenman_gunlugu (
                 id SERIAL PRIMARY KEY,
                 kullanici_id BIGINT NOT NULL,
@@ -655,27 +659,31 @@ def intervals_aktiviteyi_metne_cevir(aktivite):
     return "\n".join(satirlar)
 
 
-def intervals_son_gorulen_getir(kullanici_id):
+def intervals_aktivite_daha_once_bildirildi_mi(kullanici_id, aktivite_id):
     if not DATABASE_URL:
-        return ""
+        return False
     baglanti = psycopg2.connect(DATABASE_URL)
     imlec = baglanti.cursor()
-    imlec.execute("SELECT son_gorulen_aktivite_id FROM intervals_baglantilar WHERE kullanici_id = %s", (kullanici_id,))
-    satir = imlec.fetchone()
+    imlec.execute(
+        "SELECT 1 FROM intervals_bildirilen_aktiviteler WHERE kullanici_id = %s AND aktivite_id = %s",
+        (kullanici_id, str(aktivite_id)),
+    )
+    sonuc = imlec.fetchone() is not None
     imlec.close()
     baglanti.close()
-    return satir[0] if satir and satir[0] else ""
+    return sonuc
 
 
-def intervals_son_gorulen_guncelle(kullanici_id, aktivite_id):
+def intervals_aktiviteyi_bildirildi_isaretle(kullanici_id, aktivite_id):
     if not DATABASE_URL:
         return
     baglanti = psycopg2.connect(DATABASE_URL)
     baglanti.autocommit = True
     imlec = baglanti.cursor()
     imlec.execute(
-        "UPDATE intervals_baglantilar SET son_gorulen_aktivite_id = %s WHERE kullanici_id = %s",
-        (str(aktivite_id), kullanici_id),
+        "INSERT INTO intervals_bildirilen_aktiviteler (kullanici_id, aktivite_id) "
+        "VALUES (%s, %s) ON CONFLICT DO NOTHING",
+        (kullanici_id, str(aktivite_id)),
     )
     imlec.close()
     baglanti.close()
@@ -1727,6 +1735,18 @@ async def intervals_baglan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         veri = await asyncio.to_thread(intervals_uyku_verisi_getir, api_key)
         intervals_baglantisini_kaydet(kullanici_id, api_key)
+
+        # Bağlanma anında var olan aktiviteleri baştan "görülmüş" işaretle
+        # — yoksa geçmiş antrenmanlar "yeni" diye bildirilmeye başlar.
+        try:
+            mevcut_aktiviteler = await asyncio.to_thread(intervals_aktiviteleri_getir, api_key, 3)
+            for a in mevcut_aktiviteler:
+                aid = str(a.get("id", ""))
+                if aid:
+                    intervals_aktiviteyi_bildirildi_isaretle(kullanici_id, aid)
+        except Exception:
+            pass
+
         await update.message.reply_text(
             "✅ Intervals.icu bağlandı! Artık uyku/HRV verilerini "
             "sabah mesajlarında ve isteğinde kullanabileceğim."
@@ -2373,13 +2393,16 @@ async def intervals_kontrol_isi(context: ContextTypes.DEFAULT_TYPE):
     """strava_kontrol_isi ile AYNI mantık — ama Intervals.icu için.
     Huawei'nin native Intervals.icu bağlantısı, ağırlık antrenmanı gibi
     Strava'nın yakalayamadığı türleri de yakalıyor, bu yüzden ayrı
-    bir kontrol döngüsü gerekiyor."""
+    bir kontrol döngüsü gerekiyor. Her aktivite ID'si AYRI AYRI, kalıcı
+    olarak 'bildirildi' diye işaretleniyor — tek bir 'son görülen'
+    değişkeni tutmuyoruz, bu eski/yeni aktiviteler arasında sonsuz
+    tekrar (ping-pong) yaratıyordu."""
     if not DATABASE_URL:
         return
     try:
         baglanti = psycopg2.connect(DATABASE_URL)
         imlec = baglanti.cursor()
-        imlec.execute("SELECT kullanici_id, api_key, son_gorulen_aktivite_id FROM intervals_baglantilar")
+        imlec.execute("SELECT kullanici_id, api_key FROM intervals_baglantilar")
         tum_baglantilar = imlec.fetchall()
         imlec.close()
         baglanti.close()
@@ -2388,12 +2411,14 @@ async def intervals_kontrol_isi(context: ContextTypes.DEFAULT_TYPE):
 
     client_gemini, koleksiyon = istemcileri_al()
 
-    for kullanici_id, api_key, son_gorulen in tum_baglantilar:
+    for kullanici_id, api_key in tum_baglantilar:
         try:
             aktiviteler = await asyncio.to_thread(intervals_aktiviteleri_getir, api_key, 3)
             for aktivite in reversed(aktiviteler):
                 aktivite_id = str(aktivite.get("id", ""))
-                if not aktivite_id or aktivite_id == son_gorulen:
+                if not aktivite_id:
+                    continue
+                if intervals_aktivite_daha_once_bildirildi_mi(kullanici_id, aktivite_id):
                     continue
 
                 aktivite_metni = intervals_aktiviteyi_metne_cevir(aktivite)
@@ -2408,7 +2433,7 @@ async def intervals_kontrol_isi(context: ContextTypes.DEFAULT_TYPE):
                 mesaji_kaydet(kullanici_id, "model", cevap)
 
                 await guvenli_send_message(context.bot, kullanici_id, f"🏋️ Yeni antrenman algılandı (Intervals.icu)!\n\n{cevap}")
-                intervals_son_gorulen_guncelle(kullanici_id, aktivite_id)
+                intervals_aktiviteyi_bildirildi_isaretle(kullanici_id, aktivite_id)
         except Exception as e:
             print(f"Intervals.icu kontrol hatası (kullanıcı {kullanici_id}): {e}")
 
