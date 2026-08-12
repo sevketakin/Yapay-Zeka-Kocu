@@ -2020,12 +2020,29 @@ async def beslenme_ozet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def beslenme_gunluk_ozet_metni(kullanici_id):
-    """cevap_uret'e otomatik verilecek kısa bugünkü beslenme özeti."""
+    """cevap_uret'e otomatik verilecek bugünkü beslenme özeti — her
+    öğünü GERÇEK saatiyle (Türkiye saatine çevrilmiş) ve açıklamasıyla
+    birlikte gösterir, sadece toplam sayı değil."""
     kayitlar = beslenme_ozeti_getir(kullanici_id, gun_sayisi=1)
     if not kayitlar:
         return ""
-    toplam_kalori = sum((k[2] or 0) for k in kayitlar)
-    return f"Bugün şu ana kadar yediklerim (~{toplam_kalori} kcal, {len(kayitlar)} öğün kaydedildi)."
+    satirlar = ["Bugün şu ana kadar yediklerim (gerçek, kayıtlı öğünler, saatleriyle):"]
+    toplam_kalori = 0
+    for tarih, aciklama, kalori, protein, karbonhidrat, yag in kayitlar:
+        try:
+            from zoneinfo import ZoneInfo
+            if hasattr(tarih, "tzinfo"):
+                tarih_tr = tarih.replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("Europe/Istanbul")) \
+                    if tarih.tzinfo is None else tarih.astimezone(ZoneInfo("Europe/Istanbul"))
+                saat_str = tarih_tr.strftime("%H:%M")
+            else:
+                saat_str = str(tarih)
+        except Exception:
+            saat_str = tarih.strftime("%H:%M") if hasattr(tarih, "strftime") else str(tarih)
+        satirlar.append(f"- Saat {saat_str}: {aciklama} (~{kalori or 0} kcal)")
+        toplam_kalori += (kalori or 0)
+    satirlar.append(f"Toplam bugün: ~{toplam_kalori} kcal, {len(kayitlar)} öğün")
+    return "\n".join(satirlar)
 
 
 
