@@ -2882,7 +2882,13 @@ def main():
     # Her 15 dakikada bir, tüm bağlı kullanıcıların yeni Strava aktivitesi
     # olup olmadığını kontrol eder — her kullanıcıya SADECE KENDİ verisi gider.
     if app.job_queue:
-        app.job_queue.run_repeating(strava_kontrol_isi, interval=900, first=30)
+        # NOT: strava_kontrol_isi (otomatik Strava bildirimi) BİLEREK
+        # kapatıldı — Huawei artık aynı antrenmanı hem Strava'ya hem
+        # Intervals.icu'ya gönderdiği için, ikisini de otomatik izlemek
+        # ÇİFT bildirime sebep oluyordu. Intervals.icu artık her şeyi
+        # (koşu/yürüyüş + ağırlık antrenmanı) tek kaynaktan yakalıyor.
+        # Strava hâlâ /strava_ozet ve pace algılama için kullanılıyor.
+        # app.job_queue.run_repeating(strava_kontrol_isi, interval=900, first=30)
         app.job_queue.run_repeating(intervals_kontrol_isi, interval=900, first=45)
 
         # Her sabah 07:00'de (Türkiye saati), /sabah_ac demiş kullanıcılara
