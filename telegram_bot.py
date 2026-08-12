@@ -688,10 +688,6 @@ def intervals_aktiviteyi_bildirildi_isaretle(kullanici_id, aktivite_id):
     imlec.close()
     baglanti.close()
 
-    if len(satirlar) == 1:
-        return ""  # hiçbir veri gelmemiş
-    return "\n".join(satirlar)
-
 
 # ============== KALICI KULLANICI PROFİLİ ==============
 def profili_oku(kullanici_id):
