@@ -968,6 +968,16 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
     )
 
     sistem_mesaji = (
+        "🤫 GENEL KURAL — İÇ MUHAKEMENİ SESSİZ TUT: Arşivden gelen notlar "
+        "arasında konuyla (yemek, antrenman, program, ne olursa olsun) "
+        "ALAKASIZ olanlar varsa, bunları SESSİZCE görmezden gel ve "
+        "cevabını sadece alakalı bilgiye dayandır. ASLA 'video notları "
+        "alakasız, onları yok sayıyorum', 'bu bilgi başkalarına ait, "
+        "kullanmıyorum' gibi bir açıklamayla cevaba BAŞLAMA ya da bunu "
+        "belirtme — bu, kullanıcı için gereksiz ve tekrarlayıcı geliyor. "
+        "Notların hangilerinin alakalı/alakasız olduğunu KENDİ İÇİNDE "
+        "değerlendir, sonucu sessizce uygula, sadece nihai/alakalı "
+        "cevabı ver.\n\n"
         "🚨 TEMEL KURAL — GERÇEK VERİYE DAYAN, UYDURMA: Aşağıdaki üç "
         "durumda ASLA tahmin/uydurma yapma, sadece verilen gerçek bilgiyi "
         "kullan, yoksa dürüstçe 'elimde net yok' de:\n"
@@ -978,10 +988,7 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
         "GERÇEKTEN yazanı kullan — antrenman günlüğü notu varsa buna "
         "TAM GÜVEN, bu gerçek ve doğrulanmış bir kayıt. '[Genel video "
         "içeriği...]' notları BAŞKA insanların hikayeleri, asla "
-        "kullanıcınınmış gibi anlatma. BU AYRIMI SESSİZCE UYGULA — her "
-        "mesajda 'video notları alakasız, onları yok sayıyorum' gibi bir "
-        "açıklama YAPMA, sadece gerçekten kafa karıştıracak bir risk "
-        "varsa kısaca belirt, yoksa hiç bahsetme.\n"
+        "kullanıcınınmış gibi anlatma.\n"
         "2) SPESİFİK PROGRAM/İÇERİK: Bir programın (örn. '8 haftada 5K') "
         "tam hafta/gün detayını sorduğunda, SADECE notlarda gerçekten "
         "yazıyorsa kesin bilgi ver. Yoksa 'genel mantık şöyle ama tam "
