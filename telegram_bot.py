@@ -1878,21 +1878,29 @@ async def _yemek_fotografini_isle(update: Update, context: ContextTypes.DEFAULT_
             "ama bunun kaba bir tahmin olduğunu unutma."
         )
     )
-    try:
-        yanit = await asyncio.to_thread(
-            client_gemini.models.generate_content,
-            model="gemini-flash-latest",
-            contents=[
-                {"role": "user", "parts": [
-                    {"text": talimat},
-                    {"inline_data": {"mime_type": "image/jpeg", "data": gorsel_b64}},
-                ]}
-            ],
-        )
-        metin = re.sub(r"^```json\s*|\s*```$", "", yanit.text.strip(), flags=re.MULTILINE).strip("`").strip()
-        veri = json.loads(metin)
-    except Exception as e:
-        await update.message.reply_text(f"Yemek analiz edilemedi: {e}")
+    veri = None
+    son_hata = None
+    for model_adi in GEMINI_MODEL_LISTESI:
+        try:
+            yanit = await asyncio.to_thread(
+                client_gemini.models.generate_content,
+                model=model_adi,
+                contents=[
+                    {"role": "user", "parts": [
+                        {"text": talimat},
+                        {"inline_data": {"mime_type": "image/jpeg", "data": gorsel_b64}},
+                    ]}
+                ],
+            )
+            metin = re.sub(r"^```json\s*|\s*```$", "", yanit.text.strip(), flags=re.MULTILINE).strip("`").strip()
+            veri = json.loads(metin)
+            break
+        except Exception as e:
+            son_hata = e
+            continue
+
+    if veri is None:
+        await update.message.reply_text(f"Yemek analiz edilemedi (tüm modeller yoğun): {son_hata}")
         return
 
     beslenme_kaydet(
