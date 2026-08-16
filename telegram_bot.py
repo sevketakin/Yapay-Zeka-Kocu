@@ -1266,7 +1266,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"😴 Uyku/Toparlanma (Huawei Band):\n"
         f"/intervals_baglan <api_key> — Intervals.icu hesabını bağla\n"
         f"/uyku_durumu — bugünkü uyku/HRV verini yorumlat\n"
-        f"/antrenman_gecmisi [gün] — son antrenmanlarının günlüğü (varsayılan 14 gün)\n\n"
+        f"/antrenman_gecmisi [gün] — son antrenmanlarının günlüğü (varsayılan 14 gün)\n"
+        f"/antrenman_ekle <açıklama> — garantili manuel kayıt (otomatik kaçırırsa)\n\n"
         f"🏃 Strava:\n"
         f"/strava_baglan <token> — hesabını bağla\n"
         f"/son_antrenman — son aktiviteni yorumlat\n"
@@ -1831,6 +1832,21 @@ async def antrenman_gecmisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Bu dönemde kayıtlı bir antrenman günlüğü bulamadım.")
         return
     await guvenli_reply(update.message, "📓 " + ozet)
+
+
+async def antrenman_ekle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Otomatik tespitin kaçırdığı durumlar için GARANTİLİ manuel kayıt.
+    Kullanım: /antrenman_ekle Bacak günü: Squat 5x5 100kg, RDL 3x8"""
+    if not context.args:
+        await update.message.reply_text(
+            "Kullanım: /antrenman_ekle <açıklama>\n"
+            "Örn: /antrenman_ekle Bacak günü: Squat 5x5 100kg, RDL 3x8 60kg"
+        )
+        return
+    kullanici_id = update.effective_user.id
+    aciklama = " ".join(context.args)
+    antrenman_kaydet(kullanici_id, aciklama)
+    await update.message.reply_text("✅ Antrenman günlüğüne eklendi, garanti şekilde hatırlayacağım.")
 
 
 # ============== BESLENME TAKİBİ (FOTOĞRAFLI) ==============
@@ -2912,6 +2928,7 @@ def main():
     app.add_handler(CommandHandler("intervals_baglan", intervals_baglan))
     app.add_handler(CommandHandler("uyku_durumu", uyku_durumu))
     app.add_handler(CommandHandler("antrenman_gecmisi", antrenman_gecmisi))
+    app.add_handler(CommandHandler("antrenman_ekle", antrenman_ekle))
     app.add_handler(CommandHandler("beslenme_ozet", beslenme_ozet))
     app.add_handler(CommandHandler("yemek_duzelt", yemek_duzelt))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mesaj_geldi))
