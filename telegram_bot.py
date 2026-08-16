@@ -798,17 +798,40 @@ def antrenman_gunlugu_ozeti(kullanici_id, gun_sayisi=4):
 def antrenman_gunlugunu_otomatik_guncelle(client_gemini, kullanici_id, soru, cevap):
     """profili_otomatik_guncelle'e paralel çalışır — bu sefer 'kalıcı
     profil bilgisi' değil, 'bugün/dün YAPILAN spesifik bir antrenman'
-    var mı diye bakar, varsa kısa bir günlük satırı olarak kaydeder."""
+    var mı diye bakar, varsa kısa bir günlük satırı olarak kaydeder.
+    Sadece son tek mesaja değil, SON BİRKAÇ mesaja da bakıyor — çünkü
+    hareket/set/tekrar detayları genelde önceki mesajlarda konuşulup,
+    'tamamdır bitti' gibi son mesaj tek başına yeterli bağlam içermez."""
+    onceki_baglam = ""
+    try:
+        son_mesajlar = gecmisi_oku(kullanici_id, limit=8)
+        satirlar = []
+        for m in son_mesajlar:
+            rol = "Kullanıcı" if m.get("role") == "user" else "Antrenör"
+            metin = ""
+            for p in m.get("parts", []):
+                if "text" in p:
+                    metin += p["text"]
+            if metin:
+                satirlar.append(f"{rol}: {metin[:300]}")
+        onceki_baglam = "\n".join(satirlar[-8:])
+    except Exception:
+        pass
+
     talimat = (
-        "Aşağıda bir kullanıcı ile antrenörü arasındaki SON mesaj çifti var. "
-        "Kullanıcı GERÇEKTEN YAPTIĞI/TAMAMLADIĞI bir antrenmandan (koşu, "
-        "kuvvet antrenmanı vb.) bahsediyorsa, bunu TEK SATIRLIK kısa bir "
-        "günlük kaydı olarak özetle (örn. 'Bacak günü yaptı: Squat, RDL, "
-        "BSS' ya da '6. hafta 1. antrenmanını (piramit koşu) tamamladı'). "
-        "Sadece GERÇEKTEN YAPILDIĞI belirtilen antrenmanları kaydet, "
-        "PLANLANAN/önerilen ama henüz yapılmamış antrenmanları YAZMA. "
-        "Eğer böyle bir şey yoksa SADECE 'YOK' yaz.\n\n"
-        f"SON MESAJLAR:\nKullanıcı: {soru}\nAntrenör: {cevap}"
+        "Aşağıda bir kullanıcı ile antrenörü arasındaki SON KONUŞMA "
+        "(önceki birkaç mesaj + en son mesaj çifti) var. Kullanıcı "
+        "GERÇEKTEN YAPTIĞI/TAMAMLADIĞI bir antrenmandan (koşu, kuvvet "
+        "antrenmanı vb.) bahsediyorsa — detaylar (hangi hareket, kaç "
+        "set/tekrar) ÖNCEKİ mesajlarda geçmiş olsa bile — bunu TEK "
+        "SATIRLIK kısa bir günlük kaydı olarak özetle, ÖNCEKİ mesajlardaki "
+        "detayları da (hareket isimleri gibi) dahil et (örn. 'Bacak günü "
+        "yaptı: Squat, RDL, BSS' ya da '6. hafta 1. antrenmanını (piramit "
+        "koşu) tamamladı'). Sadece GERÇEKTEN YAPILDIĞI/BİTTİĞİ belirtilen "
+        "antrenmanları kaydet, PLANLANAN/önerilen ama henüz yapılmamış "
+        "antrenmanları YAZMA. Eğer böyle bir şey yoksa SADECE 'YOK' yaz.\n\n"
+        f"ÖNCEKİ MESAJLAR (bağlam için):\n{onceki_baglam}\n\n"
+        f"EN SON MESAJ ÇİFTİ:\nKullanıcı: {soru}\nAntrenör: {cevap}"
     )
     try:
         yanit = client_gemini.models.generate_content(
@@ -2302,6 +2325,7 @@ async def son_antrenman(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         mesaji_kaydet(kullanici_id, "user", soru)
         mesaji_kaydet(kullanici_id, "model", cevap)
+        antrenman_kaydet(kullanici_id, f"[/son_antrenman] {aktivite_metni}")
         await guvenli_reply(update.message, cevap)
     except Exception as e:
         await update.message.reply_text(f"Antrenman getirilirken hata: {e}")
@@ -2413,6 +2437,7 @@ async def strava_kontrol_isi(context: ContextTypes.DEFAULT_TYPE):
 
                 mesaji_kaydet(kullanici_id, "user", soru)
                 mesaji_kaydet(kullanici_id, "model", cevap)
+                antrenman_kaydet(kullanici_id, f"[Strava-otomatik] {aktivite_metni}")
 
                 await guvenli_send_message(context.bot, kullanici_id, f"🏃 Yeni antrenman algılandı!\n\n{cevap}")
                 strava_son_gorulen_guncelle(kullanici_id, aktivite["id"])
@@ -2462,6 +2487,7 @@ async def intervals_kontrol_isi(context: ContextTypes.DEFAULT_TYPE):
 
                 mesaji_kaydet(kullanici_id, "user", soru)
                 mesaji_kaydet(kullanici_id, "model", cevap)
+                antrenman_kaydet(kullanici_id, f"[Intervals.icu-otomatik] {aktivite_metni}")
 
                 await guvenli_send_message(context.bot, kullanici_id, f"🏋️ Yeni antrenman algılandı (Intervals.icu)!\n\n{cevap}")
                 intervals_aktiviteyi_bildirildi_isaretle(kullanici_id, aktivite_id)
