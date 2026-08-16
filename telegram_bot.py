@@ -751,12 +751,13 @@ def profili_otomatik_guncelle(client_gemini, kullanici_id, soru, cevap):
 def antrenman_kaydet(kullanici_id, aciklama):
     if not DATABASE_URL:
         return
+    turkiye_tarihi = _turkiye_simdi().date()
     baglanti = psycopg2.connect(DATABASE_URL)
     baglanti.autocommit = True
     imlec = baglanti.cursor()
     imlec.execute(
-        "INSERT INTO antrenman_gunlugu (kullanici_id, aciklama) VALUES (%s, %s)",
-        (kullanici_id, aciklama),
+        "INSERT INTO antrenman_gunlugu (kullanici_id, tarih, aciklama) VALUES (%s, %s, %s)",
+        (kullanici_id, turkiye_tarihi, aciklama),
     )
     imlec.close()
     baglanti.close()
@@ -768,12 +769,14 @@ def antrenman_gunlugu_ozeti(kullanici_id, gun_sayisi=4):
     HER ZAMAN doğru cevap verilebilmesi için."""
     if not DATABASE_URL:
         return ""
+    bugun = _turkiye_simdi().date()
+    baslangic = bugun - timedelta(days=gun_sayisi)
     baglanti = psycopg2.connect(DATABASE_URL)
     imlec = baglanti.cursor()
     imlec.execute(
         "SELECT tarih, aciklama FROM antrenman_gunlugu WHERE kullanici_id = %s "
-        "AND tarih >= CURRENT_DATE - INTERVAL '%s days' ORDER BY tarih DESC, id DESC",
-        (kullanici_id, gun_sayisi),
+        "AND tarih >= %s ORDER BY tarih DESC, id DESC",
+        (kullanici_id, baslangic),
     )
     satirlar = imlec.fetchall()
     imlec.close()
@@ -781,7 +784,6 @@ def antrenman_gunlugu_ozeti(kullanici_id, gun_sayisi=4):
     if not satirlar:
         return ""
 
-    bugun = _turkiye_simdi().date()
     metin_satirlari = ["Son günlerin GERÇEK antrenman günlüğüm (bu kayıtlara güven, tahmin etme):"]
     for tarih, aciklama in satirlar:
         fark = (bugun - tarih).days
@@ -1866,6 +1868,10 @@ def beslenme_kaydet(kullanici_id, aciklama, kalori, protein, karbonhidrat, yag):
 
 
 def beslenme_ozeti_getir(kullanici_id, gun_sayisi=1):
+    """gun_sayisi=1 -> SADECE bugün (Türkiye takvim günü), 'son 24 saat'
+    değil. Eskiden 'son 24 saat' penceresi kullanılıyordu, bu da dünün
+    geç saatlerindeki yemeklerin 'bugünmüş' gibi görünmesine sebep
+    oluyordu — artık gerçek takvim gününe göre filtreleniyor."""
     if not DATABASE_URL:
         return []
     baglanti = psycopg2.connect(DATABASE_URL)
@@ -1873,8 +1879,10 @@ def beslenme_ozeti_getir(kullanici_id, gun_sayisi=1):
     imlec.execute(
         "SELECT tarih, aciklama, tahmini_kalori, tahmini_protein, tahmini_karbonhidrat, "
         "tahmini_yag FROM beslenme_kayitlari WHERE kullanici_id = %s AND "
-        "tarih >= NOW() - INTERVAL '%s days' ORDER BY tarih ASC",
-        (kullanici_id, gun_sayisi),
+        "(tarih AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Istanbul')::date >= "
+        "(NOW() AT TIME ZONE 'Europe/Istanbul')::date - %s::int "
+        "ORDER BY tarih ASC",
+        (kullanici_id, gun_sayisi - 1),
     )
     satirlar = imlec.fetchall()
     imlec.close()
