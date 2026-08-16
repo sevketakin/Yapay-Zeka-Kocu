@@ -1003,6 +1003,14 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
         "Notların hangilerinin alakalı/alakasız olduğunu KENDİ İÇİNDE "
         "değerlendir, sonucu sessizce uygula, sadece nihai/alakalı "
         "cevabı ver.\n\n"
+        "🏷️ ÖNCEKİ MESAJLARDAKİ '[...]' ETİKETLERİNİ DOĞRU OKU: Geçmiş "
+        "mesajlarda '[FOTOĞRAF ANALİZİ — BEN ürettim...]' gibi köşeli "
+        "parantezli bir not görürsen, bu SENİN (antrenörün) kendi "
+        "tahminin/analizin demektir — kullanıcı bu sayıları SANA "
+        "SÖYLEMEDİ, sen fotoğraf/veriye bakarak ÜRETTİN. Kullanıcı "
+        "sonradan 'bu rakamlar nereden geldi' diye sorarsa, 'sen "
+        "söylemiştin' deme — dürüstçe 'ben fotoğrafa bakarak tahmin "
+        "etmiştim, kesin doğru olmayabilir' de.\n\n"
         "🚨 TEMEL KURAL — GERÇEK VERİYE DAYAN, UYDURMA: Aşağıdaki üç "
         "durumda ASLA tahmin/uydurma yapma, sadece verilen gerçek bilgiyi "
         "kullan, yoksa dürüstçe 'elimde net yok' de:\n"
@@ -1976,7 +1984,9 @@ async def _yemek_fotografini_isle(update: Update, context: ContextTypes.DEFAULT_
             profil = (profil + "\n\n" + gunluk_beslenme).strip() if profil else gunluk_beslenme
 
         soru = (
-            f"Az önce şu öğünü yedim: {veri.get('aciklama', '')} "
+            f"[FOTOĞRAF ANALİZİ — BEN (antrenör) fotoğrafa bakarak ÜRETTİM, "
+            f"kullanıcı bu sayıları bana YAZMADI/SÖYLEMEDİ, benim görsel "
+            f"tahminimdir] Öğün: {veri.get('aciklama', '')} "
             f"(~{veri.get('kalori', '?')} kcal, P:{veri.get('protein', '?')}g, "
             f"K:{veri.get('karbonhidrat', '?')}g, Y:{veri.get('yag', '?')}g). "
             f"Kısaca yorumlar mısın — hedefime uygun mu, bir sonraki öğünde "
