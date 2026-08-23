@@ -538,6 +538,42 @@ def strava_kosu_pace_ozeti(access_token, kac_tane=8):
     return "\n".join(satirlar)
 
 
+def intervals_kosu_pace_ozeti(api_key, kac_tane=8):
+    """strava_kosu_pace_ozeti ile AYNI mantık — ama Intervals.icu için.
+    Artık antrenmanla ilgili her şeyi (ağırlık + koşu + pace) TEK
+    kaynaktan (Intervals.icu) çekebilmek için eklendi."""
+    aktiviteler = intervals_aktiviteleri_getir(api_key, gun_sayisi=30)
+    kosular = [a for a in aktiviteler if a.get("type") in ("Run", "TrailRun", "VirtualRun")][:kac_tane]
+    if not kosular:
+        return ""
+
+    satirlar = ["Son koşularımın pace (tempo) verileri (Intervals.icu):"]
+    tum_pace_degerleri = []
+    for a in kosular:
+        mesafe_km = (a.get("distance", 0) or 0) / 1000
+        sure_dk = (a.get("moving_time", 0) or 0) / 60
+        pace = _pace_hesapla(mesafe_km, sure_dk)
+        ort_nabiz = a.get("icu_average_heart_rate") or a.get("average_heartrate")
+        tarih = (a.get("start_date_local", "") or "")[:10]
+        if pace:
+            satir = f"- {tarih}: {mesafe_km:.1f} km, pace {pace}"
+            if ort_nabiz:
+                satir += f", ort. nabız {ort_nabiz:.0f}"
+            satirlar.append(satir)
+            tum_pace_degerleri.append(sure_dk / mesafe_km if mesafe_km else None)
+
+    gecerli_paceler = [p for p in tum_pace_degerleri if p]
+    if gecerli_paceler:
+        ort_pace = sum(gecerli_paceler) / len(gecerli_paceler)
+        en_iyi_pace = min(gecerli_paceler)
+        dk_ort, sn_ort = int(ort_pace), int(round((ort_pace - int(ort_pace)) * 60))
+        dk_iyi, sn_iyi = int(en_iyi_pace), int(round((en_iyi_pace - int(en_iyi_pace)) * 60))
+        satirlar.append(f"\nOrtalama pace: {dk_ort}:{sn_ort:02d} dk/km")
+        satirlar.append(f"En iyi (en hızlı) pace: {dk_iyi}:{sn_iyi:02d} dk/km")
+
+    return "\n".join(satirlar)
+
+
 _KOSU_ANAHTAR_KELIMELER = [
     "pace", "tempo", "interval", "koşu hız", "km/saat", "dakika/km",
     "dk/km", "hangi hızla", "ne hızla", "koşu antrenman",
@@ -2639,18 +2675,34 @@ async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None)
     # verilerini OTOMATİK olarak çekip bağlama ekle — kullanıcının ayrıca
     # /strava_ozet çalıştırmasına gerek kalmadan.
     if _kosu_sorusu_mu(soru):
-        baglanti_bilgisi = strava_baglantisini_getir(kullanici_id)
-        if baglanti_bilgisi:
+        # Önce Intervals.icu'yu dene — artık antrenmanla ilgili her şeyin
+        # (ağırlık + koşu + uyku) tek kaynaktan gelmesi tutarlılık sağlıyor.
+        # Intervals.icu bağlı değilse Strava'ya düş.
+        intervals_key = intervals_api_key_getir(kullanici_id)
+        pace_ozeti = ""
+        kaynak_adi = ""
+        if intervals_key:
             try:
-                erisim_tokeni = await asyncio.to_thread(strava_erisim_tokeni_al, baglanti_bilgisi["refresh_token"])
-                pace_ozeti = await asyncio.to_thread(strava_kosu_pace_ozeti, erisim_tokeni)
-                if pace_ozeti:
-                    baglam = (
-                        f"[GERÇEK STRAVA VERİSİ — kullanıcının son koşularının gerçek pace "
-                        f"değerleri, öneri verirken buna dayan]\n{pace_ozeti}\n\n---\n\n"
-                    ) + baglam
+                pace_ozeti = await asyncio.to_thread(intervals_kosu_pace_ozeti, intervals_key)
+                kaynak_adi = "Intervals.icu"
             except Exception:
                 pass
+
+        if not pace_ozeti:
+            baglanti_bilgisi = strava_baglantisini_getir(kullanici_id)
+            if baglanti_bilgisi:
+                try:
+                    erisim_tokeni = await asyncio.to_thread(strava_erisim_tokeni_al, baglanti_bilgisi["refresh_token"])
+                    pace_ozeti = await asyncio.to_thread(strava_kosu_pace_ozeti, erisim_tokeni)
+                    kaynak_adi = "Strava"
+                except Exception:
+                    pass
+
+        if pace_ozeti:
+            baglam = (
+                f"[GERÇEK {kaynak_adi.upper()} VERİSİ — kullanıcının son koşularının gerçek pace "
+                f"değerleri, öneri verirken buna dayan]\n{pace_ozeti}\n\n---\n\n"
+            ) + baglam
 
     gecmis = gecmisi_oku(kullanici_id)
     profil = profili_oku(kullanici_id)
