@@ -262,6 +262,7 @@ def _basit_semayi_hazirla():
             ALTER TABLE tg_ayarlar ADD COLUMN IF NOT EXISTS sabah_mesaji BOOLEAN DEFAULT FALSE;
             ALTER TABLE tg_ayarlar ADD COLUMN IF NOT EXISTS olcum_hatirlatma BOOLEAN DEFAULT TRUE;
             ALTER TABLE tg_ayarlar ADD COLUMN IF NOT EXISTS sesli_cevap BOOLEAN DEFAULT FALSE;
+            ALTER TABLE tg_ayarlar ADD COLUMN IF NOT EXISTS son_sabah_mesaji_tarihi DATE;
             CREATE TABLE IF NOT EXISTS beslenme_kayitlari (
                 id SERIAL PRIMARY KEY,
                 kullanici_id BIGINT NOT NULL,
@@ -1101,7 +1102,12 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
         "4) UYKU/TOPARLANMA: 'Bugünkü uyku/toparlanma verilerim' notu "
         "varsa, antrenman önerisini buna göre uyarla (örn. uyku kötüyse "
         "hafiflet/dinlenme öner). Bu veri yoksa uyku hakkında tahmin "
-        "yürütme, sadece genel tavsiye ver.\n\n"
+        "yürütme, sadece genel tavsiye ver. Sensör verileri (uyku, "
+        "nabız, HRV) GÜN İÇİNDE GÜNCELLENEBİLİR (örn. erken uyanıp "
+        "tekrar uyuma) — eğer şu an çekilen taze veri, bugün daha önce "
+        "konuşulan bir rakamdan farklıysa bu 'tutarsızlık' DEĞİL, "
+        "sadece güncelleme demektir; EN TAZE veriye güven, farkı "
+        "sorgulayıp kafa karıştırma.\n\n"
         "🚨🚨 ISRAR ALTINDA DA UYDURMA YAPMA — EN KRİTİK KURAL: Kullanıcı "
         "'bunu zaten bilmen lazım', 'daha önce konuşmuştuk', 'bunu neden "
         "bilmiyorsun' diye ISRAR EDİP SENİ SIKIŞTIRSA BİLE, eğer o bilgi "
@@ -1881,7 +1887,17 @@ async def uyku_durumu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         client_gemini, koleksiyon = istemcileri_al()
         yumusak = yumusak_ton_mu(kullanici_id)
-        soru = f"Bugünkü uyku/toparlanma verilerimi yorumlar mısın, antrenmanımı buna göre ayarlamalı mıyım?\n\n{ozet}"
+        soru = (
+            f"[NOT: Bu, Intervals.icu'dan ŞU AN çektiğim EN GÜNCEL uyku "
+            f"verisi — gece boyunca uyku güncellenmiş olabilir (örn. "
+            f"erken uyanıp tekrar uyumuş olabilirim). Eğer bu rakam, "
+            f"bugün daha önce konuştuğumuz bir uyku bilgisinden farklıysa, "
+            f"bu bir ÇELİŞKİ DEĞİL — sadece veri güncellenmiş demektir, "
+            f"ÖNCEKİ değil BU en güncel veriye güven, farklılığı "
+            f"'tutarsızlık' diye sorgulama.]\n\n"
+            f"Bugünkü uyku/toparlanma verilerimi yorumlar mısın, "
+            f"antrenmanımı buna göre ayarlamalı mıyım?\n\n{ozet}"
+        )
         bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
         baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
         gecmis = gecmisi_oku(kullanici_id)
@@ -2183,25 +2199,58 @@ def beslenme_gunluk_ozet_metni(kullanici_id):
 
 
 async def sabah_mesaji_isi(context: ContextTypes.DEFAULT_TYPE):
-    """Her sabah 07:00'de (Türkiye saati), sabah mesajını açmış tüm
-    kullanıcılara KENDİ profillerine/verilerine göre kişisel bir
-    günaydın mesajı gönderir."""
+    """Sabit saatte DEĞİL — 06:00'dan itibaren her 30 dakikada bir
+    çalışır, her kullanıcı için o günün uyku verisi Intervals.icu'ya
+    düşmüş mü diye bakar. Düştüyse (muhtemelen kullanıcı gerçekten
+    kalkmış ve senkron tamamlanmış demektir) mesajı GÖNDERİR ve o günü
+    'gönderildi' işaretler — bir daha o gün tekrar göndermez. Veri hâlâ
+    yoksa bekler. Saat 11:00'i geçtiyse (senkron gecikmiş/hiç olmamış
+    olabilir), veri olmasa bile yine de genel bir mesaj gönderir —
+    hiç mesaj gitmeden günün geçmemesi için."""
     if not DATABASE_URL:
         return
     try:
         baglanti = psycopg2.connect(DATABASE_URL)
         imlec = baglanti.cursor()
-        imlec.execute("SELECT kullanici_id FROM tg_ayarlar WHERE sabah_mesaji = TRUE")
+        imlec.execute(
+            "SELECT kullanici_id FROM tg_ayarlar WHERE sabah_mesaji = TRUE "
+            "AND (son_sabah_mesaji_tarihi IS NULL OR son_sabah_mesaji_tarihi < %s)",
+            (_turkiye_simdi().date(),),
+        )
         kullanicilar = [r[0] for r in imlec.fetchall()]
         imlec.close()
         baglanti.close()
     except Exception:
         return
 
+    if not kullanicilar:
+        return  # bugün herkese zaten gönderilmiş
+
+    su_an = _turkiye_simdi()
+    son_tarih_gecerli = su_an.hour >= 11  # bu saatten sonra veri beklemeden gönder
+
     client_gemini, koleksiyon = istemcileri_al()
 
     for kullanici_id in kullanicilar:
         try:
+            uyku_ozeti = ""
+            intervals_key = intervals_api_key_getir(kullanici_id)
+            veri_hazir = False
+            if intervals_key:
+                try:
+                    uyku_verisi = await asyncio.to_thread(intervals_uyku_verisi_getir, intervals_key)
+                    uyku_metni = intervals_ozet_metni(uyku_verisi)
+                    if uyku_metni:
+                        uyku_ozeti = f"\n\n{uyku_metni}"
+                        veri_hazir = True
+                except Exception:
+                    pass
+
+            # Uyku verisi yoksa VE henüz 11:00 olmadıysa, bu turu atla —
+            # kullanıcı muhtemelen hâlâ uyuyor, 30 dk sonra tekrar bakılır.
+            if not veri_hazir and not son_tarih_gecerli and intervals_key:
+                continue
+
             yumusak = yumusak_ton_mu(kullanici_id)
             profil = profili_oku(kullanici_id)
             gecmis = gecmisi_oku(kullanici_id, limit=15)
@@ -2221,17 +2270,6 @@ async def sabah_mesaji_isi(context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
 
-            uyku_ozeti = ""
-            intervals_key = intervals_api_key_getir(kullanici_id)
-            if intervals_key:
-                try:
-                    uyku_verisi = await asyncio.to_thread(intervals_uyku_verisi_getir, intervals_key)
-                    uyku_metni = intervals_ozet_metni(uyku_verisi)
-                    if uyku_metni:
-                        uyku_ozeti = f"\n\n{uyku_metni}"
-                except Exception:
-                    pass
-
             soru = (f"Günaydın koç! Bugün için bana kısa bir motivasyon ve gün planı "
                     f"önerir misin?{strava_ozeti}{uyku_ozeti}")
             bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
@@ -2243,6 +2281,16 @@ async def sabah_mesaji_isi(context: ContextTypes.DEFAULT_TYPE):
             mesaji_kaydet(kullanici_id, "user", soru)
             mesaji_kaydet(kullanici_id, "model", cevap)
             await guvenli_send_message(context.bot, kullanici_id, f"☀️ Günaydın!\n\n{cevap}")
+
+            baglanti2 = psycopg2.connect(DATABASE_URL)
+            baglanti2.autocommit = True
+            imlec2 = baglanti2.cursor()
+            imlec2.execute(
+                "UPDATE tg_ayarlar SET son_sabah_mesaji_tarihi = %s WHERE kullanici_id = %s",
+                (_turkiye_simdi().date(), kullanici_id),
+            )
+            imlec2.close()
+            baglanti2.close()
         except Exception as e:
             print(f"Sabah mesajı hatası (kullanıcı {kullanici_id}): {e}")
 
@@ -3057,14 +3105,15 @@ def main():
         # app.job_queue.run_repeating(strava_kontrol_isi, interval=900, first=30)
         app.job_queue.run_repeating(intervals_kontrol_isi, interval=900, first=45)
 
-        # Her sabah 07:00'de (Türkiye saati), /sabah_ac demiş kullanıcılara
-        # otomatik, kişisel bir günaydın mesajı gönderir.
+        # Sabit 07:00 yerine, her 30 dakikada bir kontrol eder — o günün
+        # uyku verisi gerçekten hazır olunca (kullanıcı muhtemelen kalkmış
+        # demektir) mesajı gönderir, günde sadece 1 kez. Veri yoksa ve
+        # saat henüz 11:00'i geçmediyse bekler (fonksiyonun kendi içinde
+        # kontrol ediliyor).
         try:
             from zoneinfo import ZoneInfo
             from datetime import time as _time
-            app.job_queue.run_daily(
-                sabah_mesaji_isi, time=_time(7, 0, tzinfo=ZoneInfo("Europe/Istanbul")),
-            )
+            app.job_queue.run_repeating(sabah_mesaji_isi, interval=1800, first=60)
             # Her gün 09:00'da, son ölçümünden 30+ gün geçmiş kullanıcılara
             # aylık ölçüm hatırlatması gönderir.
             app.job_queue.run_daily(
