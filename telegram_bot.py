@@ -2199,23 +2199,28 @@ def beslenme_gunluk_ozet_metni(kullanici_id):
 
 
 async def sabah_mesaji_isi(context: ContextTypes.DEFAULT_TYPE):
-    """Sabit saatte DEĞİL — 06:00'dan itibaren her 30 dakikada bir
-    çalışır, her kullanıcı için o günün uyku verisi Intervals.icu'ya
-    düşmüş mü diye bakar. Düştüyse (muhtemelen kullanıcı gerçekten
-    kalkmış ve senkron tamamlanmış demektir) mesajı GÖNDERİR ve o günü
-    'gönderildi' işaretler — bir daha o gün tekrar göndermez. Veri hâlâ
-    yoksa bekler. Saat 11:00'i geçtiyse (senkron gecikmiş/hiç olmamış
-    olabilir), veri olmasa bile yine de genel bir mesaj gönderir —
-    hiç mesaj gitmeden günün geçmemesi için."""
+    """Sabit saatte DEĞİL — ama SADECE 06:00-12:00 (Türkiye saati)
+    PENCERESİ İÇİNDE çalışır. Bu pencerede, o günün uyku verisi
+    Intervals.icu'ya düşmüş mü diye bakar. Düştüyse mesajı GÖNDERİR ve
+    o günü 'gönderildi' işaretler. Veri hâlâ yoksa ve saat 11:00'i
+    geçtiyse (ama hâlâ 12:00'den önceyse), veri olmasa bile genel bir
+    mesaj gönderir. PENCERENİN DIŞINDA (12:00-06:00 arası) HİÇBİR ZAMAN
+    göndermez — bu, deploy/yeniden başlatmaların yanlışlıkla gece
+    'Günaydın' mesajı göndermesini önlemek için kritik bir sınır."""
     if not DATABASE_URL:
         return
+
+    su_an = _turkiye_simdi()
+    if not (6 <= su_an.hour < 12):
+        return  # pencere dışında — ne veri kontrolü ne fallback, hiç çalışma
+
     try:
         baglanti = psycopg2.connect(DATABASE_URL)
         imlec = baglanti.cursor()
         imlec.execute(
             "SELECT kullanici_id FROM tg_ayarlar WHERE sabah_mesaji = TRUE "
             "AND (son_sabah_mesaji_tarihi IS NULL OR son_sabah_mesaji_tarihi < %s)",
-            (_turkiye_simdi().date(),),
+            (su_an.date(),),
         )
         kullanicilar = [r[0] for r in imlec.fetchall()]
         imlec.close()
@@ -2226,8 +2231,7 @@ async def sabah_mesaji_isi(context: ContextTypes.DEFAULT_TYPE):
     if not kullanicilar:
         return  # bugün herkese zaten gönderilmiş
 
-    su_an = _turkiye_simdi()
-    son_tarih_gecerli = su_an.hour >= 11  # bu saatten sonra veri beklemeden gönder
+    son_tarih_gecerli = su_an.hour >= 11  # 11:00-12:00 arası: veri beklemeden gönder
 
     client_gemini, koleksiyon = istemcileri_al()
 
