@@ -1055,6 +1055,26 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
         "baskıcı/sert bir koç gibi değil, anlayışlı bir rehber gibi."
     )
 
+    format_kurali = (
+        "📱 FORMAT — TELEGRAM MESAJI YAZ, RAPOR YAZMA: Sen bir arkadaşının/"
+        "antrenörünün Telegram'dan sana attığı bir MESAJ yazıyorsun, resmi "
+        "bir rapor/analiz belgesi DEĞİL. Şu kalıplardan KAÇIN:\n"
+        "- '### Başlık' gibi markdown başlıkları KULLANMA — gerçek biri "
+        "sana mesaj atarken başlık açmaz.\n"
+        "- Her cevabı madde madde (bullet point) listeler halinde bölmek "
+        "yerine, çoğu zaman AKICI, doğal cümlelerle (normal konuşma gibi) "
+        "yaz — madde listesi sadece gerçekten sıralı bir şey (egzersiz "
+        "listesi gibi) varsa kullanılsın.\n"
+        "- **Kalın yazıyı** her cümlede değil, sadece GERÇEKTEN vurgulanması "
+        "gereken 1-2 kelimede kullan.\n"
+        "- HİTAP ÇEŞİTLİLİĞİ: 'Şampiyon' ya da 'Dostum' gibi bir hitabı HER "
+        "mesajda kullanma — çoğu mesajda HİÇ hitap kullanma (direkt konuya "
+        "gir), ara sıra kullanacaksan da çeşitlendir. Aynı kelimeyi sürekli "
+        "tekrarlamak, samimi değil ROBOTİK/ŞABLON hissi veriyor.\n"
+        "- Kısa bir soruya kısa cevap ver — her mesajı bir 'analiz raporuna' "
+        "çevirme, sadece konu gerçekten karmaşıksa uzun/yapılandırılmış yaz."
+    )
+
     profil_blogu = (
         f"📋 KULLANICI HAKKINDA KALICI BİLGİLER (bunlar her zaman doğrudur, "
         f"konuşma ne kadar eski olursa olsun unutma):\n{profil}\n\n"
@@ -1149,7 +1169,8 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
         "Sana verilen notlar (varsa) senin kendi bilgi birikimin gibi "
         "davran, dışarıdan kaynak gibi sunma. Alakalıysa öncelikle bunlara "
         "dayan, alakasızsa kendi genel uzmanlığından cevap ver.\n\n"
-        f"{ton_talimati}"
+        f"{ton_talimati}\n\n"
+        f"{format_kurali}"
     )
 
     contents = list(gecmis)
@@ -2943,6 +2964,107 @@ async def buton_tiklandi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await guvenli_reply(query.message, metin)
 
 
+async def _ders_programini_isle(update: Update, context: ContextTypes.DEFAULT_TYPE, belge):
+    """Bir ders/iş programı .xlsx dosyasını okur, her hafta içi günün
+    en erken başlangıç / en geç bitiş saatini çıkarır, bunu kalıcı
+    profile ekler (böylece TÜM gelecekteki antrenman önerileri bu
+    programa göre ayarlanır) ve hemen uygun bir haftalık şablon önerir."""
+    import re as _re
+    from collections import defaultdict as _defaultdict
+    import openpyxl as _openpyxl
+
+    kullanici_id = update.effective_user.id
+    dosya = await context.bot.get_file(belge.file_id)
+    icerik_bytes = bytes(await dosya.download_as_bytearray())
+
+    try:
+        gecici_dosya = BytesIO(icerik_bytes)
+        wb = _openpyxl.load_workbook(gecici_dosya, data_only=True)
+        ws = wb.active
+    except Exception as e:
+        await update.message.reply_text(f"Excel dosyası okunamadı: {e}")
+        return
+
+    gun_regex = _re.compile(r'^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|'
+                             r'Pazartesi|Salı|Çarşamba|Perşembe|Cuma|Cumartesi|Pazar)\s*[-–]\s*\d')
+    zaman_regex = _re.compile(r'^(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})$')
+    gun_ceviri = {
+        "Monday": "Pazartesi", "Tuesday": "Salı", "Wednesday": "Çarşamba",
+        "Thursday": "Perşembe", "Friday": "Cuma", "Saturday": "Cumartesi", "Sunday": "Pazar",
+        "Pazartesi": "Pazartesi", "Salı": "Salı", "Çarşamba": "Çarşamba",
+        "Perşembe": "Perşembe", "Cuma": "Cuma", "Cumartesi": "Cumartesi", "Pazar": "Pazar",
+    }
+
+    gun_araliklari = _defaultdict(list)
+    mevcut_gun = None
+    for row in ws.iter_rows(min_row=1, values_only=True):
+        if not row or row[0] is None:
+            continue
+        a_val = str(row[0]).strip()
+        gun_match = gun_regex.match(a_val)
+        if gun_match:
+            mevcut_gun = gun_ceviri.get(gun_match.group(1))
+            continue
+        zaman_match = zaman_regex.match(a_val)
+        if zaman_match and mevcut_gun:
+            h1, m1, h2, m2 = map(int, zaman_match.groups())
+            gun_araliklari[mevcut_gun].append((h1 * 60 + m1, h2 * 60 + m2))
+
+    if not gun_araliklari:
+        await update.message.reply_text(
+            "Bu Excel dosyasının yapısını tanıyamadım (gün/saat kalıbı bulunamadı). "
+            "Programını kısaca yazarak anlatabilirsin, onu da not alırım."
+        )
+        return
+
+    gun_sirasi = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
+    ozet_satirlari = ["📅 Ders/iş programımdan çıkarılan haftalık müsaitlik durumum:"]
+    for gun in gun_sirasi:
+        araliklar = gun_araliklari.get(gun, [])
+        if not araliklar:
+            ozet_satirlari.append(f"- {gun}: Programda hiç kayıt yok, muhtemelen BOŞ.")
+            continue
+        en_erken = min(a[0] for a in araliklar)
+        en_gec = max(a[1] for a in araliklar)
+        ozet_satirlari.append(
+            f"- {gun}: Genelde {en_erken // 60:02d}:{en_erken % 60:02d} - "
+            f"{en_gec // 60:02d}:{en_gec % 60:02d} arası dolu (ders/klinik)."
+        )
+    ozet_metni = "\n".join(ozet_satirlari)
+
+    # Kalıcı profile ekle — TÜM gelecekteki antrenman önerileri buna göre ayarlansın
+    mevcut_profil = profili_oku(kullanici_id)
+    yeni_profil = (mevcut_profil + "\n\n" + ozet_metni).strip() if mevcut_profil else ozet_metni
+    profili_yaz(kullanici_id, yeni_profil)
+
+    await update.message.reply_text(
+        "✅ Ders programın okundu ve kalıcı profiline eklendi — "
+        "bundan sonraki tüm antrenman önerilerimde bunu dikkate alacağım.\n\n" + ozet_metni
+    )
+
+    # Hemen uygun bir haftalık antrenman şablonu da önerelim
+    try:
+        client_gemini, koleksiyon = istemcileri_al()
+        yumusak = yumusak_ton_mu(kullanici_id)
+        soru = (
+            f"Az önce ders/iş programımı ekledim:\n{ozet_metni}\n\n"
+            f"Bu programa göre, mevcut antrenman rutinimi (koşu + ağırzık) "
+            f"hangi gün/saatlere yerleştirmemi önerirsin? Kısa, pratik bir "
+            f"haftalık şablon öner."
+        )
+        bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
+        baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
+        gecmis = gecmisi_oku(kullanici_id)
+        cevap = await asyncio.to_thread(
+            cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=yeni_profil
+        )
+        mesaji_kaydet(kullanici_id, "user", soru)
+        mesaji_kaydet(kullanici_id, "model", cevap)
+        await guvenli_reply(update.message, cevap)
+    except Exception as e:
+        print(f"Ders programına göre şablon önerilirken hata: {e}")
+
+
 async def _md_dosyasini_isle(update: Update, context: ContextTypes.DEFAULT_TYPE, belge):
     """Bir video transkripti (.md) dosyasını doğrudan canlı ChromaDB
     arşivine ekler — zip yükleme/redeploy derdi olmadan, anında."""
@@ -2994,17 +3116,22 @@ async def _md_dosyasini_isle(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
 
 async def belge_geldi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """.json (eski sohbet) ya da .md (video transkripti) dosyası
-    gönderildiğinde: doğrudan canlı arşive (ChromaDB) ekler."""
+    """.json (eski sohbet), .md (video transkripti) ya da .xlsx (ders
+    programı) dosyası gönderildiğinde işler."""
     belge = update.message.document
 
     if belge.file_name.endswith(".md"):
         await _md_dosyasini_isle(update, context, belge)
         return
 
+    if belge.file_name.endswith(".xlsx"):
+        await _ders_programini_isle(update, context, belge)
+        return
+
     if not belge.file_name.endswith(".json"):
         await update.message.reply_text(
-            "Şu an .json (eski sohbet) ya da .md (video transkripti) dosyası kabul ediyorum."
+            "Şu an .json (eski sohbet), .md (video transkripti) ya da "
+            ".xlsx (ders programı) dosyası kabul ediyorum."
         )
         return
 
