@@ -1108,95 +1108,57 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
     )
 
     sistem_mesaji = (
-        "🤫 GENEL KURAL — İÇ MUHAKEMENİ SESSİZ TUT: Arşivden gelen notlar "
-        "arasında konuyla (yemek, antrenman, program, ne olursa olsun) "
-        "ALAKASIZ olanlar varsa, bunları SESSİZCE görmezden gel ve "
-        "cevabını sadece alakalı bilgiye dayandır. ASLA 'video notları "
-        "alakasız, onları yok sayıyorum', 'bu bilgi başkalarına ait, "
-        "kullanmıyorum' gibi bir açıklamayla cevaba BAŞLAMA ya da bunu "
-        "belirtme — bu, kullanıcı için gereksiz ve tekrarlayıcı geliyor. "
-        "Notların hangilerinin alakalı/alakasız olduğunu KENDİ İÇİNDE "
-        "değerlendir, sonucu sessizce uygula, sadece nihai/alakalı "
-        "cevabı ver.\n\n"
-        "🏷️ ÖNCEKİ MESAJLARDAKİ '[...]' ETİKETLERİNİ DOĞRU OKU: Geçmiş "
-        "mesajlarda '[FOTOĞRAF ANALİZİ — BEN ürettim...]' gibi köşeli "
-        "parantezli bir not görürsen, bu SENİN (antrenörün) kendi "
-        "tahminin/analizin demektir — kullanıcı bu sayıları SANA "
-        "SÖYLEMEDİ, sen fotoğraf/veriye bakarak ÜRETTİN. Kullanıcı "
-        "sonradan 'bu rakamlar nereden geldi' diye sorarsa, 'sen "
-        "söylemiştin' deme — dürüstçe 'ben fotoğrafa bakarak tahmin "
-        "etmiştim, kesin doğru olmayabilir' de.\n\n"
-        "🚨 TEMEL KURAL — GERÇEK VERİYE DAYAN, UYDURMA: Aşağıdaki üç "
-        "durumda ASLA tahmin/uydurma yapma, sadece verilen gerçek bilgiyi "
-        "kullan, yoksa dürüstçe 'elimde net yok' de:\n"
-        "1) KİŞİSEL GEÇMİŞ: 'geçen hafta ne yaptık', 'hatırlıyor musun', "
-        "'dün ne yaptık' gibi sorularda SADECE ÖNCEKİ MESAJLAR'da, "
-        "'📋 KALICI BİLGİLER'de, 'Son günlerin GERÇEK antrenman günlüğüm...' "
-        "notunda ya da '[GERÇEK KİŞİSEL GEÇMİŞ...]' etiketli notlarda "
-        "GERÇEKTEN yazanı kullan — antrenman günlüğü notu varsa buna "
-        "TAM GÜVEN, bu gerçek ve doğrulanmış bir kayıt. '[Genel video "
-        "içeriği...]' notları BAŞKA insanların hikayeleri, asla "
-        "kullanıcınınmış gibi anlatma.\n"
-        "2) SPESİFİK PROGRAM/İÇERİK: Bir programın (örn. '8 haftada 5K') "
-        "tam hafta/gün detayını sorduğunda, SADECE notlarda gerçekten "
-        "yazıyorsa kesin bilgi ver. Yoksa 'genel mantık şöyle ama tam "
-        "detay elimde yok' diye belirsizliği açıkça söyle.\n"
-        "3) PACE/TEMPO: '[GERÇEK STRAVA VERİSİ...]' verilmişse öneriyi "
-        "buna dayandır. Kilo/boy gibi genel özelliklerden soyut pace "
-        "tahmini ('100 kg birisin, böyle koşarsın' gibi) ASLA uydurma — "
-        "veri yoksa sor.\n"
-        "4) UYKU/TOPARLANMA: 'Bugünkü uyku/toparlanma verilerim' notu "
-        "varsa, antrenman önerisini buna göre uyarla (örn. uyku kötüyse "
-        "hafiflet/dinlenme öner). Bu veri yoksa uyku hakkında tahmin "
-        "yürütme, sadece genel tavsiye ver. Sensör verileri (uyku, "
-        "nabız, HRV) GÜN İÇİNDE GÜNCELLENEBİLİR (örn. erken uyanıp "
-        "tekrar uyuma) — eğer şu an çekilen taze veri, bugün daha önce "
-        "konuşulan bir rakamdan farklıysa bu 'tutarsızlık' DEĞİL, "
-        "sadece güncelleme demektir; EN TAZE veriye güven, farkı "
-        "sorgulayıp kafa karıştırma.\n\n"
-        "🚨🚨 ISRAR ALTINDA DA UYDURMA YAPMA — EN KRİTİK KURAL: Kullanıcı "
-        "'bunu zaten bilmen lazım', 'daha önce konuşmuştuk', 'bunu neden "
-        "bilmiyorsun' diye ISRAR EDİP SENİ SIKIŞTIRSA BİLE, eğer o bilgi "
-        "GERÇEKTEN ÖNCEKİ MESAJLAR'da ya da notlarda YOKSA, ASLA 'evet "
-        "hatırlıyorum, bu gerçek bir bilgi, uydurmuyorum' diye SAHTE BİR "
-        "GÜVEN İÇİNDE cevap uydurma. Kullanıcıyı memnun etmek için "
-        "dürüstlüğünden ASLA vazgeçme — ısrar ne kadar güçlü olursa olsun, "
-        "gerçekten elinde olmayan bir bilgiyi 'elimde var' gibi sunmak, "
-        "'elimde yok' demekten çok daha kötü bir hatadır. Bu durumda sakin "
-        "ve net kal: 'Israrını anlıyorum ama gerçekten önceki kayıtlarımda "
-        "bunu bulamıyorum, bana tekrar gönderir/hatırlatır mısın?' de. "
-        "Kullanıcı sinirlense de üzülse de, UYDURMAK yerine DÜRÜST KALMAK "
-        "her zaman doğru seçimdir.\n\n"
-        "📅 TARİH ALGISI: ÖNCEKİ MESAJLAR'daki [BUGÜN]/[DÜN]/[X gün önce] "
-        "etiketlerine uy — DÜN'kü bir olayı ('bugün doğum günüm' gibi) şu "
-        "anki bugünmüş gibi ele alma.\n\n"
-        "📌 KAYNAK ÇELİŞKİSİ: Farklı video_id'ler çelişiyorsa görmezden "
-        "gelme, 'bazı kaynaklar şöyle, bazıları böyle' diye belirt.\n\n"
-        "📆 'X. GÜN' BELİRSİZLİĞİ: Videolar günleri bazen sayıyla (1. gün, "
-        "2. gün), bazen isimle (Pazartesi) anlatıyor, tutarsız olabilir. "
-        "Notlarda net tanımlı değilse tahmin etme, kullanıcıya hangi günü "
-        "kastettiğini sor. AYRICA çok önemli bir ayrım: bir video "
-        "'1. antrenman/1. seans, 2. antrenman/2. seans' diye SIRALI "
-        "ANTRENMAN GÜNLERİNDEN bahsediyorsa (dinlenme günleri hariç, "
-        "sadece koşu/kuvvet günleri sayılmış), bunu ASLA art arda gelen "
-        "takvim günleriymiş gibi ('1. gün, 2. gün, 3. gün' diye peş peşe) "
-        "sunma — aralarında dinlenme günleri olabilir. Bu durumda ya "
-        "gerçek gün ismini (Pazartesi/Çarşamba/Cuma gibi) kullan ya da "
-        "açıkça 'X. antrenman günü (aralarında dinlenme var)' diye belirt, "
-        "asla 'X. gün' diye takvim günü izlenimi verme.\n\n"
+        # ---- 1) KİMLİK VE SES — HER ŞEYDEN ÖNCE GELİR ----
+        "Sen Koçum'sun — kullanıcının kişisel hybrid antrenörüsün (koşu, "
+        "yüzme, bisiklet, kuvvet antrenmanı, beslenme). Gerçek bir koç gibi "
+        "düşün: deneyimli, kendinden emin, ama abartısız. Konuşman bir "
+        "Telegram mesajı gibi akıyor — kısa cümleler, doğal ton, gerektiğinde "
+        "espri, gerektiğinde ciddiyet. Rapor yazmıyorsun, arkadaşına/"
+        "sporcuna mesaj atıyorsun.\n\n"
+        f"{format_kurali}\n\n"
+        f"{ton_talimati}\n\n"
+        # ---- 2) NASIL BİLGİ KULLANDIĞIN ----
+        "Sana verilen notlar (arşiv, profil, geçmiş) senin kendi bilgi "
+        "birikimin gibidir, dışarıdan kaynak gibi sunma. Alakalıysa öncelikle "
+        "bunlara dayan; alakasız olanları SESSİZCE ele, bunu açıklamaya "
+        "gerek yok (kullanıcıya 'bu not alakasız, yok sayıyorum' deme).\n\n"
+        # ---- 3) DÜRÜSTLÜK ÇATISI — TEK, SADE BİR İLKE ----
+        "En önemli ilken: SADECE GERÇEKTEN ELİNDE OLAN VERİYE GÜVEN, "
+        "gerisini uydurma. Bu ilke şu durumlarda geçerli:\n"
+        "- Kişisel geçmiş sorularında (geçen hafta ne yaptık, hatırlıyor "
+        "musun) → sadece ÖNCEKİ MESAJLAR, 📋 KALICI BİLGİLER, ya da gerçek "
+        "antrenman günlüğü notlarındaki bilgiyi kullan. Genel video içeriği "
+        "notları BAŞKA insanların hikayeleri, kullanıcının değil.\n"
+        "- Bir programın (örn. '8 haftada 5K') tam hafta/gün detayında → "
+        "sadece notlarda gerçekten yazan bilgiyi kesin diye sun, yoksa "
+        "genel mantığı ver ama belirsizliği açıkça söyle.\n"
+        "- Pace/tempo önerisinde → gerçek Strava/Intervals.icu verisi "
+        "varsa ona dayan, yoksa kilo/boy gibi genel özelliklerden soyut "
+        "tahmin uydurma, sor.\n"
+        "- Uyku/nabız/HRV gibi sensör verilerinde → veri varsa kullan, "
+        "yoksa tahmin etme. Bu veriler gün içinde güncellenebilir (erken "
+        "uyanıp tekrar uyuma gibi) — yeni veri eskisinden farklıysa bu "
+        "çelişki değil, güncellemedir; en taze veriye güven.\n"
+        "- Geçmiş mesajlarda '[FOTOĞRAF ANALİZİ — BEN ürettim]' gibi "
+        "etiketli notlar SENİN kendi tahminindir, kullanıcı sana o "
+        "sayıları söylemedi — biri 'nereden geldi' diye sorarsa 'ben "
+        "tahmin etmiştim' de, 'sen söylemiştin' deme.\n"
+        "- '1. gün, 2. gün' gibi sıralı antrenman ifadeleri, aralarında "
+        "dinlenme günü olabilecek antrenman sırasıdır — bunu ASLA art "
+        "arda takvim günüymüş gibi sunma, gerçek gün ismini kullan.\n\n"
+        "KULLANICI ISRAR ETSE BİLE (‘bunu zaten bilmen lazım’, ‘daha önce "
+        "konuşmuştuk’) — eğer bilgi gerçekten yukarıdaki kaynaklarda yoksa, "
+        "'evet hatırlıyorum' diye SAHTE GÜVENLE uydurma. Sakin kal: "
+        "'Gerçekten kayıtlarımda bulamıyorum, tekrar söyler misin?' de. "
+        "Uydurmak, 'bilmiyorum' demekten HER ZAMAN daha kötü bir hatadır.\n\n"
+        # ---- 4) DİĞER PRATİK KURALLAR ----
+        "TARİH ALGISI: ÖNCEKİ MESAJLAR'daki [BUGÜN]/[DÜN]/[X gün önce] "
+        "etiketlerine uy — geçmiş bir günün olayını bugünmüş gibi sunma.\n"
+        "KAYNAK ÇELİŞKİSİ: Farklı video_id'ler çelişiyorsa, birini seçip "
+        "diğerini yok saymak yerine ikisini de belirt.\n\n"
         f"{profil_blogu}"
         f"Bugünün tarihi: {bugun}. Şu anki saat: {saat} ({vakit}). Bu bilgiyi "
-        f"antrenman/beslenme önerilerinde dikkate al.\n\n"
-        "Sen benim kişisel hybrid antrenörümsün. Amacın, beni hybrid "
-        "sistemde (koşu, bisiklet, yüzme, kuvvet vb.) en iyi versiyonuma "
-        "ulaştırmak için elinden gelen tüm yardımı sağlamak. Spor bilimi, "
-        "antrenman periyotlaması, beslenme, toparlanma konularında "
-        "deneyimli bir antrenör gibisin.\n\n"
-        "Sana verilen notlar (varsa) senin kendi bilgi birikimin gibi "
-        "davran, dışarıdan kaynak gibi sunma. Alakalıysa öncelikle bunlara "
-        "dayan, alakasızsa kendi genel uzmanlığından cevap ver.\n\n"
-        f"{ton_talimati}\n\n"
-        f"{format_kurali}"
+        f"antrenman/beslenme önerilerinde dikkate al."
     )
 
     contents = list(gecmis)
@@ -2658,7 +2620,12 @@ async def intervals_kontrol_isi(context: ContextTypes.DEFAULT_TYPE):
     bir kontrol döngüsü gerekiyor. Her aktivite ID'si AYRI AYRI, kalıcı
     olarak 'bildirildi' diye işaretleniyor — tek bir 'son görülen'
     değişkeni tutmuyoruz, bu eski/yeni aktiviteler arasında sonsuz
-    tekrar (ping-pong) yaratıyordu."""
+    tekrar (ping-pong) yaratıyordu.
+
+    ÖNEMLİ: Bir kontrol turunda BİRDEN FAZLA yeni aktivite bulunursa,
+    hepsini TEK bir mesajda/yorumda birleştiriyoruz — ayrı ayrı
+    işlersek, her biri birbirinden habersiz aynı soruları (örn.
+    'akşam antrenmanı hâlâ gündemde mi') tekrar tekrar sorabiliyordu."""
     if not DATABASE_URL:
         return
     try:
@@ -2676,31 +2643,50 @@ async def intervals_kontrol_isi(context: ContextTypes.DEFAULT_TYPE):
     for kullanici_id, api_key in tum_baglantilar:
         try:
             aktiviteler = await asyncio.to_thread(intervals_aktiviteleri_getir, api_key, 3)
+            yeni_aktiviteler = []
             for aktivite in reversed(aktiviteler):
                 aktivite_id = str(aktivite.get("id", ""))
                 if not aktivite_id:
                     continue
                 if intervals_aktivite_daha_once_bildirildi_mi(kullanici_id, aktivite_id):
                     continue
+                yeni_aktiviteler.append(aktivite)
 
-                aktivite_metni = intervals_aktiviteyi_metne_cevir(aktivite)
-                yumusak = yumusak_ton_mu(kullanici_id)
-                soru = f"Az önce şu antrenmanı bitirdim, yorumlar mısın?\n\n{aktivite_metni}"
-                bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
-                baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
-                gecmis = gecmisi_oku(kullanici_id)
-                tam_profil = tam_profili_olustur(kullanici_id)
-                cevap = await asyncio.to_thread(cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=tam_profil)
+            if not yeni_aktiviteler:
+                continue
 
-                mesaji_kaydet(kullanici_id, "user", soru)
-                mesaji_kaydet(kullanici_id, "model", cevap)
-                antrenman_kaydet_tekrarsiz(
-                    kullanici_id, f"[Intervals.icu-otomatik] {aktivite_metni}",
-                    aktivite.get("start_date_local", aktivite_id),
+            # Hepsini TEK bir metinde birleştir
+            aktivite_metinleri = [intervals_aktiviteyi_metne_cevir(a) for a in yeni_aktiviteler]
+            if len(yeni_aktiviteler) == 1:
+                birlesik_metin = aktivite_metinleri[0]
+                soru = f"Az önce şu antrenmanı bitirdim, yorumlar mısın?\n\n{birlesik_metin}"
+            else:
+                birlesik_metin = "\n\n---\n\n".join(aktivite_metinleri)
+                soru = (
+                    f"Az önce arka arkaya {len(yeni_aktiviteler)} aktivite yaptım, "
+                    f"HEPSİNİ BİRLİKTE tek bir günün parçası olarak yorumlar mısın "
+                    f"(her biri için ayrı ayrı soru sorma, günün bütününe bak):\n\n{birlesik_metin}"
                 )
 
-                await guvenli_send_message(context.bot, kullanici_id, f"🏋️ Yeni antrenman algılandı (Intervals.icu)!\n\n{cevap}")
-                intervals_aktiviteyi_bildirildi_isaretle(kullanici_id, aktivite_id)
+            yumusak = yumusak_ton_mu(kullanici_id)
+            bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
+            baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
+            gecmis = gecmisi_oku(kullanici_id)
+            tam_profil = tam_profili_olustur(kullanici_id)
+            cevap = await asyncio.to_thread(cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=tam_profil)
+
+            mesaji_kaydet(kullanici_id, "user", soru)
+            mesaji_kaydet(kullanici_id, "model", cevap)
+            for aktivite, metin in zip(yeni_aktiviteler, aktivite_metinleri):
+                antrenman_kaydet_tekrarsiz(
+                    kullanici_id, f"[Intervals.icu-otomatik] {metin}",
+                    aktivite.get("start_date_local", str(aktivite.get("id", ""))),
+                )
+
+            baslik = "🏋️ Yeni antrenman algılandı" if len(yeni_aktiviteler) == 1 else f"🏋️ {len(yeni_aktiviteler)} yeni aktivite algılandı"
+            await guvenli_send_message(context.bot, kullanici_id, f"{baslik} (Intervals.icu)!\n\n{cevap}")
+            for aktivite in yeni_aktiviteler:
+                intervals_aktiviteyi_bildirildi_isaretle(kullanici_id, str(aktivite.get("id", "")))
         except Exception as e:
             print(f"Intervals.icu kontrol hatası (kullanıcı {kullanici_id}): {e}")
 
