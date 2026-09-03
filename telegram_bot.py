@@ -742,6 +742,27 @@ def profili_oku(kullanici_id):
         return ""
 
 
+def tam_profili_olustur(kullanici_id):
+    """profili_oku'nun TEK BAŞINA yetersiz kaldığı yerler için — temel
+    profile ek olarak vücut ölçümü, beslenme ve ANTRENMAN GÜNLÜĞÜ
+    özetlerini de birleştirip TEK bir metin döndürür. Bu, örneğin
+    kullanıcı /antrenman_ekle ile bir hareketi zaten kaydettiyse,
+    otomatik bildirim/yorum üreten fonksiyonların bunu GÖRMESİNİ sağlar
+    — aksi halde zaten bilinen bir şeyi tekrar tekrar sormaya devam
+    ederler (gerçek kullanımda tekrarlayan bir sorun olarak görüldü)."""
+    profil = profili_oku(kullanici_id)
+    olcum_ozeti = olcum_ozeti_ve_trend(kullanici_id)
+    if olcum_ozeti:
+        profil = (profil + "\n\n" + olcum_ozeti).strip() if profil else olcum_ozeti
+    beslenme_ozeti = beslenme_gunluk_ozet_metni(kullanici_id)
+    if beslenme_ozeti:
+        profil = (profil + "\n\n" + beslenme_ozeti).strip() if profil else beslenme_ozeti
+    antrenman_ozeti = antrenman_gunlugu_ozeti(kullanici_id)
+    if antrenman_ozeti:
+        profil = (profil + "\n\n" + antrenman_ozeti).strip() if profil else antrenman_ozeti
+    return profil
+
+
 def profili_yaz(kullanici_id, yeni_profil):
     if not DATABASE_URL:
         return
@@ -1071,6 +1092,11 @@ def cevap_uret(client_gemini, soru, baglam, gecmis, gorsel_b64=None, gorsel_mime
         "mesajda kullanma — çoğu mesajda HİÇ hitap kullanma (direkt konuya "
         "gir), ara sıra kullanacaksan da çeşitlendir. Aynı kelimeyi sürekli "
         "tekrarlamak, samimi değil ROBOTİK/ŞABLON hissi veriyor.\n"
+        "- EMOJİ: Mesaj başına EN FAZLA 1-2 emoji kullan (hiç kullanmamak "
+        "da tamamen normal). ASLA aynı emoji kombinasyonunu (örn. "
+        "'🚀🏃‍♂️💥' gibi) tekrar tekrar, birebir aynı şekilde mesaj sonuna "
+        "ekleme — bu, en net 'bu bir şablon/bot' işaretlerinden biri. "
+        "Gerçek bir insan her mesajının sonuna aynı 3 emojiyi koymaz.\n"
         "- Kısa bir soruya kısa cevap ver — her mesajı bir 'analiz raporuna' "
         "çevirme, sadece konu gerçekten karmaşıksa uzun/yapılandırılmış yaz."
     )
@@ -2496,7 +2522,8 @@ async def son_antrenman(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
         baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
         gecmis = gecmisi_oku(kullanici_id)
-        cevap = await asyncio.to_thread(cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak)
+        tam_profil = tam_profili_olustur(kullanici_id)
+        cevap = await asyncio.to_thread(cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=tam_profil)
 
         mesaji_kaydet(kullanici_id, "user", soru)
         mesaji_kaydet(kullanici_id, "model", cevap)
@@ -2608,7 +2635,8 @@ async def strava_kontrol_isi(context: ContextTypes.DEFAULT_TYPE):
                 bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
                 baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
                 gecmis = gecmisi_oku(kullanici_id)
-                cevap = await asyncio.to_thread(cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak)
+                tam_profil = tam_profili_olustur(kullanici_id)
+                cevap = await asyncio.to_thread(cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=tam_profil)
 
                 mesaji_kaydet(kullanici_id, "user", soru)
                 mesaji_kaydet(kullanici_id, "model", cevap)
@@ -2661,7 +2689,8 @@ async def intervals_kontrol_isi(context: ContextTypes.DEFAULT_TYPE):
                 bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
                 baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
                 gecmis = gecmisi_oku(kullanici_id)
-                cevap = await asyncio.to_thread(cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak)
+                tam_profil = tam_profili_olustur(kullanici_id)
+                cevap = await asyncio.to_thread(cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=tam_profil)
 
                 mesaji_kaydet(kullanici_id, "user", soru)
                 mesaji_kaydet(kullanici_id, "model", cevap)
@@ -2779,16 +2808,7 @@ async def _soruyu_isle(update, context, soru, gorsel_b64=None, gorsel_mime=None)
                 ) + baglam
 
         gecmis = gecmisi_oku(kullanici_id)
-        profil = profili_oku(kullanici_id)
-        olcum_ozeti = olcum_ozeti_ve_trend(kullanici_id)
-        if olcum_ozeti:
-            profil = (profil + "\n\n" + olcum_ozeti).strip() if profil else olcum_ozeti
-        beslenme_ozeti = beslenme_gunluk_ozet_metni(kullanici_id)
-        if beslenme_ozeti:
-            profil = (profil + "\n\n" + beslenme_ozeti).strip() if profil else beslenme_ozeti
-        antrenman_ozeti = antrenman_gunlugu_ozeti(kullanici_id)
-        if antrenman_ozeti:
-            profil = (profil + "\n\n" + antrenman_ozeti).strip() if profil else antrenman_ozeti
+        profil = tam_profili_olustur(kullanici_id)
         cevap = await asyncio.to_thread(
             cevap_uret, client_gemini, soru, baglam, gecmis, gorsel_b64, gorsel_mime, yumusak, profil
         )
