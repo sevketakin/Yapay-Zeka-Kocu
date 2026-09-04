@@ -263,6 +263,8 @@ def _basit_semayi_hazirla():
             ALTER TABLE tg_ayarlar ADD COLUMN IF NOT EXISTS olcum_hatirlatma BOOLEAN DEFAULT TRUE;
             ALTER TABLE tg_ayarlar ADD COLUMN IF NOT EXISTS sesli_cevap BOOLEAN DEFAULT FALSE;
             ALTER TABLE tg_ayarlar ADD COLUMN IF NOT EXISTS son_sabah_mesaji_tarihi DATE;
+            ALTER TABLE tg_ayarlar ADD COLUMN IF NOT EXISTS ders_grubu TEXT;
+            ALTER TABLE tg_ayarlar ADD COLUMN IF NOT EXISTS ders_programi_ozeti TEXT;
             CREATE TABLE IF NOT EXISTS beslenme_kayitlari (
                 id SERIAL PRIMARY KEY,
                 kullanici_id BIGINT NOT NULL,
@@ -760,6 +762,9 @@ def tam_profili_olustur(kullanici_id):
     antrenman_ozeti = antrenman_gunlugu_ozeti(kullanici_id)
     if antrenman_ozeti:
         profil = (profil + "\n\n" + antrenman_ozeti).strip() if profil else antrenman_ozeti
+    ders_programi = ders_programi_ozeti_getir(kullanici_id)
+    if ders_programi:
+        profil = (profil + "\n\n" + ders_programi).strip() if profil else ders_programi
     return profil
 
 
@@ -2418,6 +2423,87 @@ async def strava_baglan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Bağlantı başarısız: {e}")
 
 
+async def grup_ayarla(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kullanım: /grup_ayarla 2B
+    Ders programı PDF/Excel'i işlerken, 'GROUP 2A' gibi başka bir alt
+    gruba ait seansları senin müsaitliğinden HARİÇ tutabilmemiz için."""
+    if not context.args:
+        await update.message.reply_text(
+            "Kullanım: /grup_ayarla <grubun> (örn: /grup_ayarla 2B)\n"
+            "Bunu ayarladıktan sonra gönderdiğin ders programı PDF/Excel'inde, "
+            "'GROUP 2A' gibi SANA AİT OLMAYAN alt grup seansları müsaitlik "
+            "hesabına dahil edilmez."
+        )
+        return
+    kullanici_id = update.effective_user.id
+    grup = context.args[0].upper().replace("GRUP", "").replace("GROUP", "").strip()
+    if DATABASE_URL:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        baglanti.autocommit = True
+        imlec = baglanti.cursor()
+        imlec.execute(
+            "INSERT INTO tg_ayarlar (kullanici_id, ders_grubu) VALUES (%s, %s) "
+            "ON CONFLICT (kullanici_id) DO UPDATE SET ders_grubu = %s",
+            (kullanici_id, grup, grup),
+        )
+        imlec.close()
+        baglanti.close()
+    await update.message.reply_text(
+        f"✅ Grubun '{grup}' olarak kaydedildi. Bundan sonra gönderdiğin ders "
+        f"programlarında, sana ait olmayan alt grup seansları (örn. diğer "
+        f"gruplar) müsaitlik hesabına dahil edilmeyecek."
+    )
+
+
+def ders_grubu_getir(kullanici_id):
+    if not DATABASE_URL:
+        return None
+    try:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        imlec = baglanti.cursor()
+        imlec.execute("SELECT ders_grubu FROM tg_ayarlar WHERE kullanici_id = %s", (kullanici_id,))
+        satir = imlec.fetchone()
+        imlec.close()
+        baglanti.close()
+        return satir[0] if satir and satir[0] else None
+    except Exception:
+        return None
+
+
+def ders_programi_ozeti_yaz(kullanici_id, ozet):
+    """Ders/iş programı özetini, genel profil metnine EKLEMEK yerine
+    AYRI ve her seferinde ÜZERİNE YAZILAN bir alanda tutar. Böylece
+    kullanıcı yeni bir dönem/program gönderdiğinde, eski program bilgisi
+    kalıntı olarak birikmez — otomatik olarak güncellenir."""
+    if not DATABASE_URL:
+        return
+    baglanti = psycopg2.connect(DATABASE_URL)
+    baglanti.autocommit = True
+    imlec = baglanti.cursor()
+    imlec.execute(
+        "INSERT INTO tg_ayarlar (kullanici_id, ders_programi_ozeti) VALUES (%s, %s) "
+        "ON CONFLICT (kullanici_id) DO UPDATE SET ders_programi_ozeti = %s",
+        (kullanici_id, ozet, ozet),
+    )
+    imlec.close()
+    baglanti.close()
+
+
+def ders_programi_ozeti_getir(kullanici_id):
+    if not DATABASE_URL:
+        return ""
+    try:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        imlec = baglanti.cursor()
+        imlec.execute("SELECT ders_programi_ozeti FROM tg_ayarlar WHERE kullanici_id = %s", (kullanici_id,))
+        satir = imlec.fetchone()
+        imlec.close()
+        baglanti.close()
+        return satir[0] if satir and satir[0] else ""
+    except Exception:
+        return ""
+
+
 async def video_var_mi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Kullanım: /video_var_mi <video_id_veya_link>
     Bir videonun gerçekten arşivde (ChromaDB'de) olup olmadığını,
@@ -3051,6 +3137,7 @@ async def _pdf_programini_isle(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     kullanici_id = update.effective_user.id
+    kullanicinin_grubu = ders_grubu_getir(kullanici_id)  # örn. '2B', ya da None
     dosya = await context.bot.get_file(belge.file_id)
     icerik_bytes = bytes(await dosya.download_as_bytearray())
 
@@ -3069,6 +3156,10 @@ async def _pdf_programini_isle(update: Update, context: ContextTypes.DEFAULT_TYP
                              r'Pazartesi|Salı|Çarşamba|Perşembe|Cuma|Cumartesi|Pazar)\s*[-–]\s*\d')
     zaman_regex = _re.compile(r'(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})')
     tarih_olay_regex = _re.compile(r'^(\d{2}[.\-/]\d{2}[.\-/]\d{4})\s*[:\-]\s*(.+)')
+    # 'GROUP 2A', 'GROUP 2B', 'GROUP 2', 'GROUP 1' gibi rozetleri yakalar —
+    # 2A/2B'yi ÖNCE kontrol etmemiz lazım, yoksa 'GROUP 2' deseni onları da
+    # (yanlışlıkla) eşleştirir.
+    grup_regex = _re.compile(r'GROUP\s*([12][AB]?)', _re.IGNORECASE)
     gun_ceviri = {
         "Monday": "Pazartesi", "Tuesday": "Salı", "Wednesday": "Çarşamba",
         "Thursday": "Perşembe", "Friday": "Cuma", "Saturday": "Cumartesi", "Sunday": "Pazar",
@@ -3078,8 +3169,9 @@ async def _pdf_programini_isle(update: Update, context: ContextTypes.DEFAULT_TYP
 
     gun_araliklari = _defaultdict(list)
     kritik_tarihler = []
+    atlanan_grup_sayisi = 0
     mevcut_gun = None
-    for satir in tum_satirlar:
+    for satir_index, satir in enumerate(tum_satirlar):
         satir = satir.strip()
         if not satir:
             continue
@@ -3089,6 +3181,19 @@ async def _pdf_programini_isle(update: Update, context: ContextTypes.DEFAULT_TYP
             continue
         zaman_match = zaman_regex.search(satir)
         if zaman_match and mevcut_gun:
+            # Bu satırın (ve yakın komşularının) bir grup rozeti taşıyıp
+            # taşımadığına bak — taşıyorsa ve kullanıcının grubuyla
+            # eşleşmiyorsa, bu zaman aralığını müsaitlik hesabına KATMA.
+            yakin_metin = " ".join(tum_satirlar[max(0, satir_index - 1):satir_index + 2])
+            grup_match = grup_regex.search(yakin_metin)
+            if grup_match and kullanicinin_grubu:
+                bulunan_grup = grup_match.group(1).upper()
+                kul_grup = kullanicinin_grubu.upper()
+                # '2' (harfsiz) tüm 2A/2B'yi kapsar; '2A' sadece '2A'yı
+                ait_mi = (bulunan_grup == kul_grup) or (len(bulunan_grup) == 1 and kul_grup.startswith(bulunan_grup))
+                if not ait_mi:
+                    atlanan_grup_sayisi += 1
+                    continue
             h1, m1, h2, m2 = map(int, zaman_match.groups())
             gun_araliklari[mevcut_gun].append((h1 * 60 + m1, h2 * 60 + m2))
             continue
@@ -3123,13 +3228,23 @@ async def _pdf_programini_isle(update: Update, context: ContextTypes.DEFAULT_TYP
             ozet_satirlari.append(f"- {kt}")
     ozet_metni = "\n".join(ozet_satirlari)
 
-    mevcut_profil = profili_oku(kullanici_id)
-    yeni_profil = (mevcut_profil + "\n\n" + ozet_metni).strip() if mevcut_profil else ozet_metni
-    profili_yaz(kullanici_id, yeni_profil)
+    ders_programi_ozeti_yaz(kullanici_id, ozet_metni)
+
+    ek_not = ""
+    if atlanan_grup_sayisi > 0:
+        ek_not = f"\n\n(Not: sana ait olmayan {atlanan_grup_sayisi} alt grup seansını hesaba katmadım.)"
+    elif not kullanicinin_grubu:
+        ek_not = (
+            "\n\n💡 Bu programda 'GROUP 2A/2B' gibi alt grup ayrımı olabilir. "
+            "Eğer öyleyse, /grup_ayarla 2B (kendi grubun neyse) ile bana "
+            "grubunu söylersen, bir sonraki gönderiminde SANA AİT OLMAYAN "
+            "alt grup seanslarını otomatik hariç tutarım."
+        )
 
     await update.message.reply_text(
         "✅ Ders programın (PDF) okundu ve kalıcı profiline eklendi — "
-        "bundan sonraki tüm antrenman önerilerimde bunu dikkate alacağım.\n\n" + ozet_metni
+        "bundan sonraki tüm antrenman önerilerimde bunu dikkate alacağım.\n\n"
+        + ozet_metni + ek_not
     )
 
     try:
@@ -3144,8 +3259,9 @@ async def _pdf_programini_isle(update: Update, context: ContextTypes.DEFAULT_TYP
         bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
         baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
         gecmis = gecmisi_oku(kullanici_id)
+        tam_profil = tam_profili_olustur(kullanici_id)
         cevap = await asyncio.to_thread(
-            cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=yeni_profil
+            cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=tam_profil
         )
         mesaji_kaydet(kullanici_id, "user", soru)
         mesaji_kaydet(kullanici_id, "model", cevap)
@@ -3222,10 +3338,9 @@ async def _ders_programini_isle(update: Update, context: ContextTypes.DEFAULT_TY
         )
     ozet_metni = "\n".join(ozet_satirlari)
 
-    # Kalıcı profile ekle — TÜM gelecekteki antrenman önerileri buna göre ayarlansın
-    mevcut_profil = profili_oku(kullanici_id)
-    yeni_profil = (mevcut_profil + "\n\n" + ozet_metni).strip() if mevcut_profil else ozet_metni
-    profili_yaz(kullanici_id, yeni_profil)
+    # Ayrı, her seferinde ÜZERİNE YAZILAN bir alana kaydet — böylece yeni
+    # bir dönem/program gönderildiğinde eskisi kalıntı olarak birikmez.
+    ders_programi_ozeti_yaz(kullanici_id, ozet_metni)
 
     await update.message.reply_text(
         "✅ Ders programın okundu ve kalıcı profiline eklendi — "
@@ -3245,8 +3360,9 @@ async def _ders_programini_isle(update: Update, context: ContextTypes.DEFAULT_TY
         bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
         baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
         gecmis = gecmisi_oku(kullanici_id)
+        tam_profil = tam_profili_olustur(kullanici_id)
         cevap = await asyncio.to_thread(
-            cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=yeni_profil
+            cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=tam_profil
         )
         mesaji_kaydet(kullanici_id, "user", soru)
         mesaji_kaydet(kullanici_id, "model", cevap)
@@ -3412,6 +3528,7 @@ def main():
     app.add_handler(CommandHandler("son_antrenman", son_antrenman))
     app.add_handler(CommandHandler("video_var_mi", video_var_mi))
     app.add_handler(CommandHandler("arsiv_sayisi", arsiv_sayisi))
+    app.add_handler(CommandHandler("grup_ayarla", grup_ayarla))
     app.add_handler(CommandHandler("zorla_video", zorla_video_ayarla))
     app.add_handler(CommandHandler("profil_goster", profil_goster))
     app.add_handler(CommandHandler("profil_ekle", profil_ekle))
