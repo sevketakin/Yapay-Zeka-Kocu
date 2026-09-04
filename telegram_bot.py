@@ -3034,6 +3034,126 @@ async def buton_tiklandi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await guvenli_reply(query.message, metin)
 
 
+async def _pdf_programini_isle(update: Update, context: ContextTypes.DEFAULT_TYPE, belge):
+    """_ders_programini_isle (.xlsx) ile AYNI mantık — ama PDF için.
+    PDF'ten metni çıkarıp, aynı gün/saat kalıbını arıyor. Ayrıca PDF'te
+    sıkça bulunan 'DD.MM.YYYY: Açıklama' formatındaki kritik tarihleri
+    (sınav, teslim tarihi gibi) de yakalayıp kalıcı profile ekliyor."""
+    import re as _re
+    from collections import defaultdict as _defaultdict
+    try:
+        import pdfplumber as _pdfplumber
+    except ImportError:
+        await update.message.reply_text(
+            "PDF okuma kütüphanesi kurulu değil (pdfplumber). Excel (.xlsx) "
+            "olarak gönderebilir misin, ya da programını kısaca yazarak anlat."
+        )
+        return
+
+    kullanici_id = update.effective_user.id
+    dosya = await context.bot.get_file(belge.file_id)
+    icerik_bytes = bytes(await dosya.download_as_bytearray())
+
+    try:
+        gecici_dosya = BytesIO(icerik_bytes)
+        tum_satirlar = []
+        with _pdfplumber.open(gecici_dosya) as pdf:
+            for sayfa in pdf.pages:
+                metin = sayfa.extract_text() or ""
+                tum_satirlar.extend(metin.split("\n"))
+    except Exception as e:
+        await update.message.reply_text(f"PDF dosyası okunamadı: {e}")
+        return
+
+    gun_regex = _re.compile(r'^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|'
+                             r'Pazartesi|Salı|Çarşamba|Perşembe|Cuma|Cumartesi|Pazar)\s*[-–]\s*\d')
+    zaman_regex = _re.compile(r'(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})')
+    tarih_olay_regex = _re.compile(r'^(\d{2}[.\-/]\d{2}[.\-/]\d{4})\s*[:\-]\s*(.+)')
+    gun_ceviri = {
+        "Monday": "Pazartesi", "Tuesday": "Salı", "Wednesday": "Çarşamba",
+        "Thursday": "Perşembe", "Friday": "Cuma", "Saturday": "Cumartesi", "Sunday": "Pazar",
+        "Pazartesi": "Pazartesi", "Salı": "Salı", "Çarşamba": "Çarşamba",
+        "Perşembe": "Perşembe", "Cuma": "Cuma", "Cumartesi": "Cumartesi", "Pazar": "Pazar",
+    }
+
+    gun_araliklari = _defaultdict(list)
+    kritik_tarihler = []
+    mevcut_gun = None
+    for satir in tum_satirlar:
+        satir = satir.strip()
+        if not satir:
+            continue
+        gun_match = gun_regex.match(satir)
+        if gun_match:
+            mevcut_gun = gun_ceviri.get(gun_match.group(1))
+            continue
+        zaman_match = zaman_regex.search(satir)
+        if zaman_match and mevcut_gun:
+            h1, m1, h2, m2 = map(int, zaman_match.groups())
+            gun_araliklari[mevcut_gun].append((h1 * 60 + m1, h2 * 60 + m2))
+            continue
+        tarih_match = tarih_olay_regex.match(satir)
+        if tarih_match:
+            kritik_tarihler.append(f"{tarih_match.group(1)}: {tarih_match.group(2).strip()}")
+
+    if not gun_araliklari and not kritik_tarihler:
+        await update.message.reply_text(
+            "Bu PDF'in yapısını tanıyamadım (gün/saat ya da tarih kalıbı bulunamadı). "
+            "Excel (.xlsx) olarak gönderebilir misin, ya da programını kısaca yazarak anlat."
+        )
+        return
+
+    ozet_satirlari = ["📅 Ders/iş programımdan çıkarılan haftalık müsaitlik durumum:"]
+    if gun_araliklari:
+        gun_sirasi = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
+        for gun in gun_sirasi:
+            araliklar = gun_araliklari.get(gun, [])
+            if not araliklar:
+                ozet_satirlari.append(f"- {gun}: Programda hiç kayıt yok, muhtemelen BOŞ.")
+                continue
+            en_erken = min(a[0] for a in araliklar)
+            en_gec = max(a[1] for a in araliklar)
+            ozet_satirlari.append(
+                f"- {gun}: Genelde {en_erken // 60:02d}:{en_erken % 60:02d} - "
+                f"{en_gec // 60:02d}:{en_gec % 60:02d} arası dolu (ders/klinik)."
+            )
+    if kritik_tarihler:
+        ozet_satirlari.append("\n📌 Kritik tarihler (bu tarihlerden önce antrenman yükünü hafiflet):")
+        for kt in kritik_tarihler[:15]:
+            ozet_satirlari.append(f"- {kt}")
+    ozet_metni = "\n".join(ozet_satirlari)
+
+    mevcut_profil = profili_oku(kullanici_id)
+    yeni_profil = (mevcut_profil + "\n\n" + ozet_metni).strip() if mevcut_profil else ozet_metni
+    profili_yaz(kullanici_id, yeni_profil)
+
+    await update.message.reply_text(
+        "✅ Ders programın (PDF) okundu ve kalıcı profiline eklendi — "
+        "bundan sonraki tüm antrenman önerilerimde bunu dikkate alacağım.\n\n" + ozet_metni
+    )
+
+    try:
+        client_gemini, koleksiyon = istemcileri_al()
+        yumusak = yumusak_ton_mu(kullanici_id)
+        soru = (
+            f"Az önce ders/iş programımı (PDF) ekledim:\n{ozet_metni}\n\n"
+            f"Bu programa göre, mevcut antrenman rutinimi hangi gün/saatlere "
+            f"yerleştirmemi önerirsin? Varsa kritik tarihlerin (sınav/teslim) "
+            f"öncesinde antrenman yükünü nasıl hafifletmemiz gerektiğini de belirt."
+        )
+        bulunan = await asyncio.to_thread(koleksiyon.query, query_texts=[soru], n_results=KAC_PARCA_GETIRILSIN)
+        baglam, _ = baglami_hazirla(bulunan) if bulunan['documents'][0] else ("", [])
+        gecmis = gecmisi_oku(kullanici_id)
+        cevap = await asyncio.to_thread(
+            cevap_uret, client_gemini, soru, baglam, gecmis, yumusak=yumusak, profil=yeni_profil
+        )
+        mesaji_kaydet(kullanici_id, "user", soru)
+        mesaji_kaydet(kullanici_id, "model", cevap)
+        await guvenli_reply(update.message, cevap)
+    except Exception as e:
+        print(f"PDF programına göre şablon önerilirken hata: {e}")
+
+
 async def _ders_programini_isle(update: Update, context: ContextTypes.DEFAULT_TYPE, belge):
     """Bir ders/iş programı .xlsx dosyasını okur, her hafta içi günün
     en erken başlangıç / en geç bitiş saatini çıkarır, bunu kalıcı
@@ -3186,8 +3306,8 @@ async def _md_dosyasini_isle(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
 
 async def belge_geldi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """.json (eski sohbet), .md (video transkripti) ya da .xlsx (ders
-    programı) dosyası gönderildiğinde işler."""
+    """.json (eski sohbet), .md (video transkripti), .xlsx ya da .pdf
+    (ders programı) dosyası gönderildiğinde işler."""
     belge = update.message.document
 
     if belge.file_name.endswith(".md"):
@@ -3198,10 +3318,14 @@ async def belge_geldi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _ders_programini_isle(update, context, belge)
         return
 
+    if belge.file_name.endswith(".pdf"):
+        await _pdf_programini_isle(update, context, belge)
+        return
+
     if not belge.file_name.endswith(".json"):
         await update.message.reply_text(
-            "Şu an .json (eski sohbet), .md (video transkripti) ya da "
-            ".xlsx (ders programı) dosyası kabul ediyorum."
+            "Şu an .json (eski sohbet), .md (video transkripti), .xlsx ya "
+            "da .pdf (ders programı) dosyası kabul ediyorum."
         )
         return
 
