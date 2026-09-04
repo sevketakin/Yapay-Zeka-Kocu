@@ -3224,6 +3224,21 @@ async def _pdf_programini_isle(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
+    if not gun_araliklari:
+        # Haftalık saat kısmı boş kaldı — tahmin etmek yerine, PDF'ten
+        # GERÇEKTEN ne çıktığını gösterelim ki doğru deseni yazabilelim.
+        ornek_satirlar = []
+        for hucreler in satir_gruplari[:60]:
+            ornek_satirlar.append(" | ".join(hucreler))
+        ornek_metin = "\n".join(ornek_satirlar)[:1500]
+        await update.message.reply_text(
+            "📌 Kritik tarihleri buldum ama haftalık saat bilgisini bu PDF "
+            "yapısından çıkaramadım — tahmin etmek istemiyorum. Geliştirici "
+            "için PDF'ten çıkan ham verinin bir kısmı:\n\n"
+            f"```\n{ornek_metin}\n```"
+        )
+        return
+
     ozet_satirlari = ["📅 Ders/iş programımdan çıkarılan haftalık müsaitlik durumum:"]
     if gun_araliklari:
         gun_sirasi = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
