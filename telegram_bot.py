@@ -3122,9 +3122,10 @@ async def buton_tiklandi(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _pdf_programini_isle(update: Update, context: ContextTypes.DEFAULT_TYPE, belge):
     """_ders_programini_isle (.xlsx) ile AYNI mantık — ama PDF için.
-    PDF'ten metni çıkarıp, aynı gün/saat kalıbını arıyor. Ayrıca PDF'te
-    sıkça bulunan 'DD.MM.YYYY: Açıklama' formatındaki kritik tarihleri
-    (sınav, teslim tarihi gibi) de yakalayıp kalıcı profile ekliyor."""
+    PDF'i TABLO olarak (extract_tables) okuyor — düz metin (extract_text)
+    yöntemi, çok sütunlu tablo düzenlerinde satırları karıştırabiliyordu.
+    Ayrıca PDF'te sıkça bulunan 'DD.MM.YYYY: Açıklama' formatındaki
+    kritik tarihleri (sınav, teslim tarihi gibi) de yakalar."""
     import re as _re
     from collections import defaultdict as _defaultdict
     try:
@@ -3141,24 +3142,10 @@ async def _pdf_programini_isle(update: Update, context: ContextTypes.DEFAULT_TYP
     dosya = await context.bot.get_file(belge.file_id)
     icerik_bytes = bytes(await dosya.download_as_bytearray())
 
-    try:
-        gecici_dosya = BytesIO(icerik_bytes)
-        tum_satirlar = []
-        with _pdfplumber.open(gecici_dosya) as pdf:
-            for sayfa in pdf.pages:
-                metin = sayfa.extract_text() or ""
-                tum_satirlar.extend(metin.split("\n"))
-    except Exception as e:
-        await update.message.reply_text(f"PDF dosyası okunamadı: {e}")
-        return
-
-    gun_regex = _re.compile(r'^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|'
+    gun_regex = _re.compile(r'(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|'
                              r'Pazartesi|Salı|Çarşamba|Perşembe|Cuma|Cumartesi|Pazar)\s*[-–]\s*\d')
     zaman_regex = _re.compile(r'(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})')
-    tarih_olay_regex = _re.compile(r'^(\d{2}[.\-/]\d{2}[.\-/]\d{4})\s*[:\-]\s*(.+)')
-    # 'GROUP 2A', 'GROUP 2B', 'GROUP 2', 'GROUP 1' gibi rozetleri yakalar —
-    # 2A/2B'yi ÖNCE kontrol etmemiz lazım, yoksa 'GROUP 2' deseni onları da
-    # (yanlışlıkla) eşleştirir.
+    tarih_olay_regex = _re.compile(r'(\d{2}[.\-/]\d{2}[.\-/]\d{4})\s*[:\-]\s*(.+)')
     grup_regex = _re.compile(r'GROUP\s*([12][AB]?)', _re.IGNORECASE)
     gun_ceviri = {
         "Monday": "Pazartesi", "Tuesday": "Salı", "Wednesday": "Çarşamba",
@@ -3171,25 +3158,53 @@ async def _pdf_programini_isle(update: Update, context: ContextTypes.DEFAULT_TYP
     kritik_tarihler = []
     atlanan_grup_sayisi = 0
     mevcut_gun = None
-    for satir_index, satir in enumerate(tum_satirlar):
-        satir = satir.strip()
-        if not satir:
+
+    try:
+        gecici_dosya = BytesIO(icerik_bytes)
+        satir_gruplari = []  # her satır: hücrelerin birleşimi (tablo satırı ya da düz metin satırı)
+        with _pdfplumber.open(gecici_dosya) as pdf:
+            for sayfa in pdf.pages:
+                tablolar = sayfa.extract_tables()
+                if tablolar:
+                    for tablo in tablolar:
+                        for satir in tablo:
+                            hucreler = [str(h).strip() for h in satir if h]
+                            if hucreler:
+                                satir_gruplari.append(hucreler)
+                else:
+                    # Tablo bulunamazsa düz metne düş
+                    metin = sayfa.extract_text() or ""
+                    for satir in metin.split("\n"):
+                        if satir.strip():
+                            satir_gruplari.append([satir.strip()])
+    except Exception as e:
+        await update.message.reply_text(f"PDF dosyası okunamadı: {e}")
+        return
+
+    for satir_index, hucreler in enumerate(satir_gruplari):
+        tam_satir_metni = " | ".join(hucreler)
+
+        # Bu satırdaki HER hücreye bakarak gün başlığı ara
+        gun_bulundu = False
+        for hucre in hucreler:
+            gun_match = gun_regex.search(hucre)
+            if gun_match:
+                mevcut_gun = gun_ceviri.get(gun_match.group(1))
+                gun_bulundu = True
+                break
+        if gun_bulundu:
             continue
-        gun_match = gun_regex.match(satir)
-        if gun_match:
-            mevcut_gun = gun_ceviri.get(gun_match.group(1))
-            continue
-        zaman_match = zaman_regex.search(satir)
+
+        # Saat aralığı ara (hangi hücrede olursa olsun)
+        zaman_match = zaman_regex.search(tam_satir_metni)
         if zaman_match and mevcut_gun:
-            # Bu satırın (ve yakın komşularının) bir grup rozeti taşıyıp
-            # taşımadığına bak — taşıyorsa ve kullanıcının grubuyla
-            # eşleşmiyorsa, bu zaman aralığını müsaitlik hesabına KATMA.
-            yakin_metin = " ".join(tum_satirlar[max(0, satir_index - 1):satir_index + 2])
+            baslangic = max(0, satir_index - 1)
+            bitis = min(len(satir_gruplari), satir_index + 2)
+            yakin_metin = " ".join(" | ".join(s) for s in satir_gruplari[baslangic:bitis])
             grup_match = grup_regex.search(yakin_metin)
             if grup_match and kullanicinin_grubu:
                 bulunan_grup = grup_match.group(1).upper()
                 kul_grup = kullanicinin_grubu.upper()
-                # '2' (harfsiz) tüm 2A/2B'yi kapsar; '2A' sadece '2A'yı
                 ait_mi = (bulunan_grup == kul_grup) or (len(bulunan_grup) == 1 and kul_grup.startswith(bulunan_grup))
                 if not ait_mi:
                     atlanan_grup_sayisi += 1
@@ -3197,7 +3212,8 @@ async def _pdf_programini_isle(update: Update, context: ContextTypes.DEFAULT_TYP
             h1, m1, h2, m2 = map(int, zaman_match.groups())
             gun_araliklari[mevcut_gun].append((h1 * 60 + m1, h2 * 60 + m2))
             continue
-        tarih_match = tarih_olay_regex.match(satir)
+
+        tarih_match = tarih_olay_regex.search(tam_satir_metni)
         if tarih_match:
             kritik_tarihler.append(f"{tarih_match.group(1)}: {tarih_match.group(2).strip()}")
 
