@@ -2421,6 +2421,9 @@ async def video_var_mi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     eslesme = re.search(r"watch\?v=([\w-]+)", girdi)
     if eslesme:
         video_id = eslesme.group(1)
+    # '&t=94s' gibi zaman damgası/ek parametreleri temizle (linkten
+    # kopyalarken sıkça yanlışlıkla dahil ediliyor)
+    video_id = video_id.split("&")[0].split("?")[0] if "watch?v=" not in girdi else video_id
 
     try:
         _, koleksiyon = istemcileri_al()
@@ -2435,6 +2438,37 @@ async def video_var_mi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         await update.message.reply_text(f"Kontrol sırasında hata: {e}")
+
+
+async def arsiv_sayisi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kullanım: /arsiv_sayisi <terim>
+    Verilen terimin arşivde KAÇ PARÇADA ve KAÇ FARKLI VİDEODA geçtiğini
+    gösterir — 'yüzme içeriğim yeterli mi, gerçekten hepsini eklemiş
+    miyim' gibi soruları kendi kendine denetleyebilmen için."""
+    if not context.args:
+        await update.message.reply_text("Kullanım: /arsiv_sayisi <terim> (örn: /arsiv_sayisi yüzme)")
+        return
+    terim = " ".join(context.args)
+    try:
+        _, koleksiyon = istemcileri_al()
+        sonuc = koleksiyon.get(where_document={"$contains": terim}, limit=500)
+        parca_sayisi = len(sonuc.get("ids", []))
+        if parca_sayisi == 0:
+            await update.message.reply_text(f"'{terim}' geçen hiçbir parça bulamadım arşivde.")
+            return
+        video_idler = set()
+        for meta in sonuc.get("metadatas", []):
+            if meta and meta.get("video_id"):
+                video_idler.add(meta["video_id"])
+        ornek_videolar = list(video_idler)[:5]
+        mesaj = (
+            f"'{terim}' için: **{parca_sayisi} parça**, **{len(video_idler)} farklı video**da geçiyor "
+            f"(not: 500 parça sınırıyla sayıldı, gerçek sayı daha fazla olabilir).\n\n"
+            f"Örnek video ID'leri:\n" + "\n".join(f"- {v}" for v in ornek_videolar)
+        )
+        await update.message.reply_text(mesaj)
+    except Exception as e:
+        await update.message.reply_text(f"Sayım sırasında hata: {e}")
 
 
 async def son_antrenman(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2730,6 +2764,26 @@ def _hybrid_arama(koleksiyon, soru, kac_tane):
                     metadatalar.append(anahtar_sonuc["metadatas"][i])
         except Exception:
             continue
+
+    # Yüzme sorularında da aynı mantık — arşivde yüzme videosu az olduğu
+    # için (koşu videolarına göre), sadece anlamsal arama bazen alakasız
+    # (örn. genel triatlon) içerik getirebiliyor. 'yüzme' geçen bir soruda
+    # ek olarak yüzmeye özgü terimleri KELİME OLARAK da arayıp, gerçek
+    # yüzme parçalarının öne çıkma şansını artırıyoruz.
+    if any(k in soru_kucuk for k in ["yüzme", "yüz", "kulaç", "serbest stil", "havuz"]):
+        YUZME_TERIMLERI = ["serbest stil", "kulaç", "nefes alma", "kelebek", "sırtüstü", "kurbağalama"]
+        for terim in YUZME_TERIMLERI[:3]:
+            try:
+                yuzme_sonuc = koleksiyon.get(
+                    where_document={"$contains": terim}, limit=3,
+                )
+                for i, doc_id in enumerate(yuzme_sonuc.get("ids", [])):
+                    if doc_id not in gorulen_idler:
+                        gorulen_idler.add(doc_id)
+                        dokumanlar.append(yuzme_sonuc["documents"][i])
+                        metadatalar.append(yuzme_sonuc["metadatas"][i])
+            except Exception:
+                continue
 
     if not dokumanlar:
         return {"documents": [[]], "metadatas": [[]]}
@@ -3223,6 +3277,7 @@ def main():
     app.add_handler(CommandHandler("strava_baglan", strava_baglan))
     app.add_handler(CommandHandler("son_antrenman", son_antrenman))
     app.add_handler(CommandHandler("video_var_mi", video_var_mi))
+    app.add_handler(CommandHandler("arsiv_sayisi", arsiv_sayisi))
     app.add_handler(CommandHandler("zorla_video", zorla_video_ayarla))
     app.add_handler(CommandHandler("profil_goster", profil_goster))
     app.add_handler(CommandHandler("profil_ekle", profil_ekle))
