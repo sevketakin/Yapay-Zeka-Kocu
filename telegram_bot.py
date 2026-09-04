@@ -2423,6 +2423,104 @@ async def strava_baglan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Bağlantı başarısız: {e}")
 
 
+MARMARA_PROGRAM_ID = "2026-2027-T1-G2"  # Şevket'in gerçek programı — dönem
+# değişince (örn. bahar dönemi başlayınca) bu ID'yi güncellemek gerekecek.
+MARMARA_SESSIONS_URL = "https://marmara-ders-685735342240.europe-west1.run.app/data/sessions.json"
+
+
+def marmara_programini_web_den_cek(kullanici_id):
+    """Marmara Tıp'ın canlı ders programı sitesinden GERÇEK ZAMANLI veri
+    çeker — PDF/Excel'e hiç gerek kalmadan. Sitenin kendi JSON veri
+    kaynağını (public, kimlik doğrulama gerektirmiyor) doğrudan okuyor.
+    Kullanıcının kayıtlı alt grubuna (2A/2B gibi) göre filtreleme yapar."""
+    from collections import defaultdict as _dd
+    yanit = requests.get(MARMARA_SESSIONS_URL, timeout=15)
+    yanit.raise_for_status()
+    veri = yanit.json()
+    tum_seanslar = veri.get("sessions", [])
+
+    kullanicinin_grubu = ders_grubu_getir(kullanici_id)  # örn. '2B'
+
+    gun_ceviri = {0: "Pazartesi", 1: "Salı", 2: "Çarşamba", 3: "Perşembe",
+                  4: "Cuma", 5: "Cumartesi", 6: "Pazar"}
+    gun_araliklari = _dd(list)
+
+    for seans in tum_seanslar:
+        if seans.get("programId") != MARMARA_PROGRAM_ID:
+            continue
+
+        subgroup = seans.get("subgroup", "all")
+        if kullanicinin_grubu and subgroup != "all":
+            subgroup_listesi = subgroup if isinstance(subgroup, list) else [subgroup]
+            # 'Group 2B' gibi bir metinde, kullanıcının grubu (örn. '2B') geçiyor mu?
+            ait_mi = any(kullanicinin_grubu.upper() in sg.upper().replace("GROUP", "").replace(" ", "")
+                         for sg in subgroup_listesi)
+            if not ait_mi:
+                continue
+
+        gun_index = seans.get("dayOfWeek")
+        zaman = seans.get("time", "")
+        if gun_index is None or "-" not in zaman:
+            continue
+        gun_adi = gun_ceviri.get(gun_index)
+        if not gun_adi:
+            continue
+        try:
+            baslangic_str, bitis_str = zaman.split("-")
+            h1, m1 = map(int, baslangic_str.split(":"))
+            h2, m2 = map(int, bitis_str.split(":"))
+            gun_araliklari[gun_adi].append((h1 * 60 + m1, h2 * 60 + m2))
+        except Exception:
+            continue
+
+    return gun_araliklari
+
+
+async def ders_programi_web_guncelle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kullanım: /ders_programi_guncelle
+    PDF/Excel göndermene GEREK KALMADAN, Marmara'nın canlı sitesinden
+    doğrudan güncel ders programını çeker. İstediğin zaman tekrar
+    çalıştırıp en güncel haliyle yenileyebilirsin."""
+    kullanici_id = update.effective_user.id
+    await update.message.reply_text("Canlı ders programı sitesinden çekiyorum...")
+
+    try:
+        gun_araliklari = await asyncio.to_thread(marmara_programini_web_den_cek, kullanici_id)
+    except Exception as e:
+        await update.message.reply_text(f"Siteden veri çekilemedi: {e}")
+        return
+
+    if not gun_araliklari:
+        await update.message.reply_text(
+            "Hiç kayıt bulamadım — /grup_ayarla ile grubunu (örn. 2B) "
+            "doğru ayarladığından emin ol, ya da program ID'si değişmiş olabilir."
+        )
+        return
+
+    gun_sirasi = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
+    ozet_satirlari = ["📅 Ders/iş programımdan çıkarılan haftalık müsaitlik durumum (canlı siteden):"]
+    for gun in gun_sirasi:
+        araliklar = gun_araliklari.get(gun, [])
+        if not araliklar:
+            ozet_satirlari.append(f"- {gun}: Programda hiç kayıt yok, muhtemelen BOŞ.")
+            continue
+        en_erken = min(a[0] for a in araliklar)
+        en_gec = max(a[1] for a in araliklar)
+        ozet_satirlari.append(
+            f"- {gun}: Genelde {en_erken // 60:02d}:{en_erken % 60:02d} - "
+            f"{en_gec // 60:02d}:{en_gec % 60:02d} arası dolu (ders/klinik)."
+        )
+    ozet_metni = "\n".join(ozet_satirlari)
+
+    ders_programi_ozeti_yaz(kullanici_id, ozet_metni)
+
+    await update.message.reply_text(
+        "✅ Ders programı canlı siteden güncellendi ve kalıcı profiline "
+        "eklendi. İstediğin zaman /ders_programi_guncelle ile tekrar "
+        "tazeleyebilirsin.\n\n" + ozet_metni
+    )
+
+
 async def grup_ayarla(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Kullanım: /grup_ayarla 2B
     Ders programı PDF/Excel'i işlerken, 'GROUP 2A' gibi başka bir alt
@@ -3226,15 +3324,26 @@ async def _pdf_programini_isle(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if not gun_araliklari:
         # Haftalık saat kısmı boş kaldı — tahmin etmek yerine, PDF'ten
-        # GERÇEKTEN ne çıktığını gösterelim ki doğru deseni yazabilelim.
+        # GERÇEKTEN ne çıktığını gösterelim. Kapak/öğretim görevlisi
+        # listesi çok uzun olabildiği için, doğrudan 'Week' ya da bir
+        # gün isminin İLK GEÇTİĞİ yere atlayıp, oradan itibaren gösteriyoruz
+        # — yoksa teşhis, asıl program tablosuna hiç ulaşmadan bitiyordu.
+        haftalik_baslangic_regex = _re.compile(r'\bWeek\s*\d|Monday|Pazartesi', _re.IGNORECASE)
+        baslangic_index = 0
+        for i, hucreler in enumerate(satir_gruplari):
+            if any(haftalik_baslangic_regex.search(h) for h in hucreler):
+                baslangic_index = i
+                break
+
         ornek_satirlar = []
-        for hucreler in satir_gruplari[:60]:
+        for hucreler in satir_gruplari[baslangic_index:baslangic_index + 60]:
             ornek_satirlar.append(" | ".join(hucreler))
-        ornek_metin = "\n".join(ornek_satirlar)[:1500]
+        ornek_metin = "\n".join(ornek_satirlar)[:2500]
         await update.message.reply_text(
             "📌 Kritik tarihleri buldum ama haftalık saat bilgisini bu PDF "
             "yapısından çıkaramadım — tahmin etmek istemiyorum. Geliştirici "
-            "için PDF'ten çıkan ham verinin bir kısmı:\n\n"
+            "için PDF'ten çıkan ham verinin (program tablosunun başladığı "
+            "yerden itibaren) bir kısmı:\n\n"
             f"```\n{ornek_metin}\n```"
         )
         return
@@ -3560,6 +3669,7 @@ def main():
     app.add_handler(CommandHandler("video_var_mi", video_var_mi))
     app.add_handler(CommandHandler("arsiv_sayisi", arsiv_sayisi))
     app.add_handler(CommandHandler("grup_ayarla", grup_ayarla))
+    app.add_handler(CommandHandler("ders_programi_guncelle", ders_programi_web_guncelle))
     app.add_handler(CommandHandler("zorla_video", zorla_video_ayarla))
     app.add_handler(CommandHandler("profil_goster", profil_goster))
     app.add_handler(CommandHandler("profil_ekle", profil_ekle))
