@@ -2432,7 +2432,11 @@ def marmara_programini_web_den_cek(kullanici_id):
     """Marmara Tıp'ın canlı ders programı sitesinden GERÇEK ZAMANLI veri
     çeker — PDF/Excel'e hiç gerek kalmadan. Sitenin kendi JSON veri
     kaynağını (public, kimlik doğrulama gerektirmiyor) doğrudan okuyor.
-    Kullanıcının kayıtlı alt grubuna (2A/2B gibi) göre filtreleme yapar."""
+    Kullanıcının kayıtlı alt grubuna (2A/2B gibi) göre filtreleme yapar.
+    ÖNEMLİ: Sonucu HAFTA HAFTA ayrı tutar — 14 haftalık staj boyunca her
+    hafta farklı bir blok (semiyoloji, göğüs, kardiyoloji vb.) olduğu ve
+    günlük düzen haftadan haftaya değiştiği için, tek bir 'genel şablon'a
+    sıkıştırmak yanıltıcı oluyordu."""
     from collections import defaultdict as _dd
     yanit = requests.get(MARMARA_SESSIONS_URL, timeout=15)
     yanit.raise_for_status()
@@ -2441,9 +2445,10 @@ def marmara_programini_web_den_cek(kullanici_id):
 
     kullanicinin_grubu = ders_grubu_getir(kullanici_id)  # örn. '2B'
 
-    gun_ceviri = {0: "Pazartesi", 1: "Salı", 2: "Çarşamba", 3: "Perşembe",
-                  4: "Cuma", 5: "Cumartesi", 6: "Pazar"}
-    gun_araliklari = _dd(list)
+    gun_ceviri = {0: "Pzt", 1: "Sal", 2: "Çar", 3: "Per", 4: "Cum", 5: "Cmt", 6: "Paz"}
+    hafta_gun_araliklari = _dd(lambda: _dd(list))
+    hafta_tarihleri = {}
+    hafta_bloklari = _dd(set)
 
     for seans in tum_seanslar:
         if seans.get("programId") != MARMARA_PROGRAM_ID:
@@ -2452,63 +2457,84 @@ def marmara_programini_web_den_cek(kullanici_id):
         subgroup = seans.get("subgroup", "all")
         if kullanicinin_grubu and subgroup != "all":
             subgroup_listesi = subgroup if isinstance(subgroup, list) else [subgroup]
-            # 'Group 2B' gibi bir metinde, kullanıcının grubu (örn. '2B') geçiyor mu?
             ait_mi = any(kullanicinin_grubu.upper() in sg.upper().replace("GROUP", "").replace(" ", "")
                          for sg in subgroup_listesi)
             if not ait_mi:
                 continue
 
+        hafta_no = seans.get("week")
         gun_index = seans.get("dayOfWeek")
         zaman = seans.get("time", "")
-        if gun_index is None or "-" not in zaman:
+        tarih = seans.get("date", "")
+        if hafta_no is None or gun_index is None or "-" not in zaman:
             continue
-        gun_adi = gun_ceviri.get(gun_index)
-        if not gun_adi:
+        gun_kisa = gun_ceviri.get(gun_index)
+        if not gun_kisa:
             continue
         try:
             baslangic_str, bitis_str = zaman.split("-")
             h1, m1 = map(int, baslangic_str.split(":"))
             h2, m2 = map(int, bitis_str.split(":"))
-            gun_araliklari[gun_adi].append((h1 * 60 + m1, h2 * 60 + m2))
+            hafta_gun_araliklari[hafta_no][gun_kisa].append((h1 * 60 + m1, h2 * 60 + m2))
         except Exception:
             continue
 
-    return gun_araliklari
+        if tarih:
+            onceki = hafta_tarihleri.get(hafta_no, (tarih, tarih))
+            hafta_tarihleri[hafta_no] = (min(onceki[0], tarih), max(onceki[1], tarih))
+
+        blok = seans.get("blockId")
+        if blok:
+            hafta_bloklari[hafta_no].add(blok)
+
+    return hafta_gun_araliklari, hafta_tarihleri, hafta_bloklari
 
 
 async def ders_programi_web_guncelle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Kullanım: /ders_programi_guncelle
     PDF/Excel göndermene GEREK KALMADAN, Marmara'nın canlı sitesinden
-    doğrudan güncel ders programını çeker. İstediğin zaman tekrar
-    çalıştırıp en güncel haliyle yenileyebilirsin."""
+    doğrudan güncel ders programını çeker. Her haftayı AYRI AYRI
+    gösterir — 14 hafta boyunca günlük düzen değiştiği için tek bir
+    genel şablon yanıltıcı olurdu."""
     kullanici_id = update.effective_user.id
     await update.message.reply_text("Canlı ders programı sitesinden çekiyorum...")
 
     try:
-        gun_araliklari = await asyncio.to_thread(marmara_programini_web_den_cek, kullanici_id)
+        hafta_gun_araliklari, hafta_tarihleri, hafta_bloklari = await asyncio.to_thread(
+            marmara_programini_web_den_cek, kullanici_id
+        )
     except Exception as e:
         await update.message.reply_text(f"Siteden veri çekilemedi: {e}")
         return
 
-    if not gun_araliklari:
+    if not hafta_gun_araliklari:
         await update.message.reply_text(
             "Hiç kayıt bulamadım — /grup_ayarla ile grubunu (örn. 2B) "
             "doğru ayarladığından emin ol, ya da program ID'si değişmiş olabilir."
         )
         return
 
-    gun_sirasi = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
-    ozet_satirlari = ["📅 Ders/iş programımdan çıkarılan haftalık müsaitlik durumum (canlı siteden):"]
-    for gun in gun_sirasi:
-        araliklar = gun_araliklari.get(gun, [])
-        if not araliklar:
-            ozet_satirlari.append(f"- {gun}: Programda hiç kayıt yok, muhtemelen BOŞ.")
-            continue
-        en_erken = min(a[0] for a in araliklar)
-        en_gec = max(a[1] for a in araliklar)
+    gun_sirasi_kisa = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"]
+    ozet_satirlari = [
+        "📅 Ders/iş programım — HAFTA HAFTA müsaitlik durumu (canlı siteden, "
+        "her hafta farklı blok/düzen olabilir, TEK ŞABLONA indirgeme):"
+    ]
+    for hafta_no in sorted(hafta_gun_araliklari.keys()):
+        gunler = hafta_gun_araliklari[hafta_no]
+        tarih_araligi = hafta_tarihleri.get(hafta_no)
+        tarih_str = f" ({tarih_araligi[0]} - {tarih_araligi[1]})" if tarih_araligi else ""
+        bloklar = ", ".join(hafta_bloklari.get(hafta_no, [])) or "?"
+        gun_parcalari = []
+        for gun in gun_sirasi_kisa:
+            araliklar = gunler.get(gun, [])
+            if not araliklar:
+                gun_parcalari.append(f"{gun}:BOŞ")
+                continue
+            en_erken = min(a[0] for a in araliklar)
+            en_gec = max(a[1] for a in araliklar)
+            gun_parcalari.append(f"{gun}:{en_erken//60:02d}-{en_gec//60:02d}")
         ozet_satirlari.append(
-            f"- {gun}: Genelde {en_erken // 60:02d}:{en_erken % 60:02d} - "
-            f"{en_gec // 60:02d}:{en_gec % 60:02d} arası dolu (ders/klinik)."
+            f"Hafta {hafta_no}{tarih_str} [{bloklar}]: " + " | ".join(gun_parcalari)
         )
     ozet_metni = "\n".join(ozet_satirlari)
 
@@ -2516,8 +2542,8 @@ async def ders_programi_web_guncelle(update: Update, context: ContextTypes.DEFAU
 
     await update.message.reply_text(
         "✅ Ders programı canlı siteden güncellendi ve kalıcı profiline "
-        "eklendi. İstediğin zaman /ders_programi_guncelle ile tekrar "
-        "tazeleyebilirsin.\n\n" + ozet_metni
+        "eklendi (hafta hafta). İstediğin zaman /ders_programi_guncelle "
+        "ile tekrar tazeleyebilirsin.\n\n" + ozet_metni[:3500]
     )
 
 
