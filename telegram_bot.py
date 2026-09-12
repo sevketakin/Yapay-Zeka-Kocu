@@ -275,6 +275,15 @@ def _basit_semayi_hazirla():
                 tahmini_karbonhidrat INTEGER,
                 tahmini_yag INTEGER
             );
+            CREATE TABLE IF NOT EXISTS kisisel_besinler (
+                kullanici_id BIGINT NOT NULL,
+                isim TEXT NOT NULL,
+                kalori_100g REAL,
+                protein_100g REAL,
+                karbonhidrat_100g REAL,
+                yag_100g REAL,
+                PRIMARY KEY (kullanici_id, isim)
+            );
             CREATE TABLE IF NOT EXISTS intervals_baglantilar (
                 kullanici_id BIGINT PRIMARY KEY,
                 api_key TEXT NOT NULL
@@ -765,6 +774,9 @@ def tam_profili_olustur(kullanici_id):
     ders_programi = ders_programi_ozeti_getir(kullanici_id)
     if ders_programi:
         profil = (profil + "\n\n" + ders_programi).strip() if profil else ders_programi
+    kisisel_besinler = kisisel_besinleri_getir(kullanici_id)
+    if kisisel_besinler:
+        profil = (profil + "\n\n" + kisisel_besinler).strip() if profil else kisisel_besinler
     return profil
 
 
@@ -2020,6 +2032,90 @@ async def yemek_ekle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def besin_foto_ekle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Besin etiketi fotoğrafı okuma modu — açıkken gönderilen fotoğraf,
+    yemek olarak DEĞİL, kişisel besin veritabanına (kalıcı, tekrar
+    kullanılacak ürün) eklenmek üzere işlenir."""
+    su_an_acik = context.user_data.get("besin_foto_modu", False)
+    if su_an_acik:
+        context.user_data["besin_foto_modu"] = False
+        await update.message.reply_text("Besin etiketi modu kapatıldı.")
+    else:
+        context.user_data["besin_foto_modu"] = True
+        await update.message.reply_text(
+            "🏷️ Besin etiketi modu açık — bundan sonra gönderdiğin besin "
+            "etiketi (ambalaj) fotoğrafını okuyup kişisel besin veritabanına "
+            "kaydedeceğim. İstersen fotoğrafa altyazı (caption) olarak isim "
+            "yaz (örn. 'Pirinç unu'), yazmazsan etikette gördüğüm ismi "
+            "kullanırım. Kapatmak için tekrar /besin_foto_ekle yaz."
+        )
+
+
+async def _besin_etiketini_isle(update: Update, context: ContextTypes.DEFAULT_TYPE, foto_bytes):
+    """Besin etiketi fotoğrafını Gemini ile okuyup, kişisel besin
+    veritabanına kaydeder. Etiketteki rakamlar zaten KESİN/basılı
+    olduğu için, yemek fotoğrafı tahmininden çok daha güvenilir."""
+    client_gemini, _ = istemcileri_al()
+    kullanici_id = update.effective_user.id
+    gorsel_b64 = base64.b64encode(foto_bytes).decode("utf-8")
+
+    talimat = (
+        "Bu, bir besin ürününün besin değerleri etiketinin fotoğrafı. "
+        "Etikette yazan GERÇEK rakamları oku (tahmin etme, sadece okunanı "
+        "yaz). Şu JSON formatında, SADECE JSON olarak cevap ver, başka "
+        "hiçbir şey yazma:\n"
+        '{"urun_adi": "...", "referans_gram": 100, "kalori": 0, '
+        '"protein": 0, "karbonhidrat": 0, "yag": 0}\n'
+        "referans_gram, etikette '100g\'de' yazıyorsa 100, '1 porsiyon "
+        "(30g)' gibi başka bir referans yazıyorsa o gramı kullan. "
+        "Rakamları net okuyamıyorsan alanı null yap."
+    )
+
+    veri = None
+    for model_adi in GEMINI_MODEL_LISTESI:
+        try:
+            yanit = await asyncio.to_thread(
+                client_gemini.models.generate_content,
+                model=model_adi,
+                contents=[
+                    {"role": "user", "parts": [
+                        {"text": talimat},
+                        {"inline_data": {"mime_type": "image/jpeg", "data": gorsel_b64}},
+                    ]}
+                ],
+            )
+            metin = re.sub(r"^```json\s*|\s*```$", "", yanit.text.strip(), flags=re.MULTILINE).strip("`").strip()
+            veri = json.loads(metin)
+            break
+        except Exception:
+            continue
+
+    if not veri or veri.get("kalori") is None:
+        await update.message.reply_text(
+            "Etiketi net okuyamadım — daha net/yakın bir fotoğraf çeker misin, "
+            "ya da /besin_ekle ile elle girer misin?"
+        )
+        return
+
+    isim = (update.message.caption or veri.get("urun_adi") or "Bilinmeyen ürün").strip()
+    try:
+        ref_gram = float(veri.get("referans_gram") or 100)
+        kalori_100g = float(veri["kalori"]) / ref_gram * 100
+        protein_100g = float(veri.get("protein") or 0) / ref_gram * 100
+        karb_100g = float(veri.get("karbonhidrat") or 0) / ref_gram * 100
+        yag_100g = float(veri.get("yag") or 0) / ref_gram * 100
+    except (ValueError, TypeError, ZeroDivisionError):
+        await update.message.reply_text("Etiketteki rakamları işlerken bir sorun oldu, /besin_ekle ile elle girer misin?")
+        return
+
+    kisisel_besin_kaydet(kullanici_id, isim, kalori_100g, protein_100g, karb_100g, yag_100g)
+    await update.message.reply_text(
+        f"✅ '{isim}' etiketten okunup kaydedildi (100g'de: {kalori_100g:.0f} kcal, "
+        f"{protein_100g:.1f}g protein, {karb_100g:.1f}g karb, {yag_100g:.1f}g yağ).\n"
+        f"Yanlış okunduysa /besin_ekle ile elle düzeltebilirsin."
+    )
+
+
 async def _yemek_fotografini_isle(update: Update, context: ContextTypes.DEFAULT_TYPE, foto_bytes):
     client_gemini, _ = istemcileri_al()
     gorsel_b64 = base64.b64encode(foto_bytes).decode("utf-8")
@@ -2113,6 +2209,129 @@ async def _yemek_fotografini_isle(update: Update, context: ContextTypes.DEFAULT_
         await guvenli_reply(update.message, yorum)
     except Exception as e:
         print(f"Yemek yorumu üretilirken hata: {e}")
+
+
+def kisisel_besin_kaydet(kullanici_id, isim, kalori_100g, protein_100g, karb_100g, yag_100g):
+    """/besin_ekle (elle) ve besin etiketi fotoğrafı okuma — İKİSİNİN DE
+    kullandığı ortak kayıt fonksiyonu. Aynı isim tekrar kaydedilirse
+    (örn. marka değişince) ESKİ değer güncellenir."""
+    if not DATABASE_URL:
+        return
+    baglanti = psycopg2.connect(DATABASE_URL)
+    baglanti.autocommit = True
+    imlec = baglanti.cursor()
+    imlec.execute(
+        "INSERT INTO kisisel_besinler (kullanici_id, isim, kalori_100g, protein_100g, "
+        "karbonhidrat_100g, yag_100g) VALUES (%s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (kullanici_id, isim) DO UPDATE SET "
+        "kalori_100g = %s, protein_100g = %s, karbonhidrat_100g = %s, yag_100g = %s",
+        (kullanici_id, isim.lower(), kalori_100g, protein_100g, karb_100g, yag_100g,
+         kalori_100g, protein_100g, karb_100g, yag_100g),
+    )
+    imlec.close()
+    baglanti.close()
+
+
+async def besin_ekle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kullanım: /besin_ekle <isim> | <referans_gram> | <kalori> | <protein> | <karbonhidrat> | <yağ>
+    Örn: /besin_ekle Pirinç unu | 100 | 366 | 6 | 80 | 1.4
+    Sürekli kullandığın bir ürünün (paket üzerindeki) gerçek makro
+    değerlerini bir kez kaydet — sonra 'X gram [isim]' dediğinde bot bu
+    GERÇEK değerlere göre hesaplar, tahmin etmez. Aynı ismi tekrar
+    eklersen (örn. marka değiştirdiğinde), ESKİ değer güncellenir."""
+    kullanici_id = update.effective_user.id
+    metin = " ".join(context.args)
+    parcalar = [p.strip() for p in metin.split("|")]
+    if len(parcalar) != 6:
+        await update.message.reply_text(
+            "Kullanım: /besin_ekle <isim> | <referans_gram> | <kalori> | "
+            "<protein> | <karbonhidrat> | <yağ>\n"
+            "Örn: /besin_ekle Pirinç unu | 100 | 366 | 6 | 80 | 1.4\n"
+            "(Bu, paketin üzerinde yazan '100g'de ...' bilgisi — ambalajına bak.)"
+        )
+        return
+    try:
+        isim, ref_gram, kalori, protein, karb, yag = parcalar
+        ref_gram = float(ref_gram)
+        kalori_100g = float(kalori) / ref_gram * 100
+        protein_100g = float(protein) / ref_gram * 100
+        karb_100g = float(karb) / ref_gram * 100
+        yag_100g = float(yag) / ref_gram * 100
+    except ValueError:
+        await update.message.reply_text("Sayısal değerleri okuyamadım, formatı kontrol eder misin?")
+        return
+
+    kisisel_besin_kaydet(kullanici_id, isim, kalori_100g, protein_100g, karb_100g, yag_100g)
+
+    await update.message.reply_text(
+        f"✅ '{isim}' kaydedildi (100g'de: {kalori_100g:.0f} kcal, "
+        f"{protein_100g:.1f}g protein, {karb_100g:.1f}g karb, {yag_100g:.1f}g yağ).\n"
+        f"Bundan sonra 'X gram {isim}' dediğinde bu gerçek değerlere göre hesaplarım. "
+        f"Marka değiştirirsen, aynı komutu yeni değerlerle tekrar çalıştır, üzerine yazılır."
+    )
+
+
+async def besin_listesi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kullanici_id = update.effective_user.id
+    besinler = kisisel_besinleri_getir(kullanici_id)
+    if not besinler:
+        await update.message.reply_text("Henüz kayıtlı bir kişisel besinin yok. /besin_ekle ile ekleyebilirsin.")
+        return
+    await guvenli_reply(update.message, besinler)
+
+
+async def besin_sil(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Kullanım: /besin_sil <isim>")
+        return
+    kullanici_id = update.effective_user.id
+    isim = " ".join(context.args).lower()
+    if DATABASE_URL:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        baglanti.autocommit = True
+        imlec = baglanti.cursor()
+        imlec.execute(
+            "DELETE FROM kisisel_besinler WHERE kullanici_id = %s AND isim = %s",
+            (kullanici_id, isim),
+        )
+        silinen = imlec.rowcount
+        imlec.close()
+        baglanti.close()
+        if silinen:
+            await update.message.reply_text(f"✅ '{isim}' silindi.")
+        else:
+            await update.message.reply_text(f"'{isim}' zaten kayıtlı değildi.")
+
+
+def kisisel_besinleri_getir(kullanici_id):
+    """Kullanıcının kaydettiği TÜM kişisel besinleri, modele verilecek
+    formatta döndürür — model bunu 'gerçek veri' olarak kullanıp, X gram
+    dendiğinde kendi başına oranlayıp hesaplayabilir."""
+    if not DATABASE_URL:
+        return ""
+    try:
+        baglanti = psycopg2.connect(DATABASE_URL)
+        imlec = baglanti.cursor()
+        imlec.execute(
+            "SELECT isim, kalori_100g, protein_100g, karbonhidrat_100g, yag_100g "
+            "FROM kisisel_besinler WHERE kullanici_id = %s", (kullanici_id,)
+        )
+        satirlar = imlec.fetchall()
+        imlec.close()
+        baglanti.close()
+    except Exception:
+        return ""
+    if not satirlar:
+        return ""
+    satirlar_metin = ["📋 Kişisel Besin Veritabanım (100g başına GERÇEK, doğrulanmış değerler — "
+                      "bu isimlerden biri geçiyorsa, TAHMİN ETME, bu değerleri kullanıp "
+                      "istenen grama göre oranla):"]
+    for isim, kalori, protein, karb, yag in satirlar:
+        satirlar_metin.append(
+            f"- {isim}: 100g'de {kalori:.0f} kcal, {protein:.1f}g protein, "
+            f"{karb:.1f}g karbonhidrat, {yag:.1f}g yağ"
+        )
+    return "\n".join(satirlar_metin)
 
 
 async def yemek_duzelt(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3175,6 +3394,10 @@ async def foto_geldi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dosya = await context.bot.get_file(update.message.photo[-1].file_id)
         foto_bytes = bytes(await dosya.download_as_bytearray())
 
+        if context.user_data.get("besin_foto_modu"):
+            await _besin_etiketini_isle(update, context, foto_bytes)
+            return
+
         if context.user_data.get("yemek_modu"):
             await _yemek_fotografini_isle(update, context, foto_bytes)
             return
@@ -3696,6 +3919,10 @@ def main():
     app.add_handler(CommandHandler("arsiv_sayisi", arsiv_sayisi))
     app.add_handler(CommandHandler("grup_ayarla", grup_ayarla))
     app.add_handler(CommandHandler("ders_programi_guncelle", ders_programi_web_guncelle))
+    app.add_handler(CommandHandler("besin_ekle", besin_ekle))
+    app.add_handler(CommandHandler("besin_listesi", besin_listesi))
+    app.add_handler(CommandHandler("besin_sil", besin_sil))
+    app.add_handler(CommandHandler("besin_foto_ekle", besin_foto_ekle))
     app.add_handler(CommandHandler("zorla_video", zorla_video_ayarla))
     app.add_handler(CommandHandler("profil_goster", profil_goster))
     app.add_handler(CommandHandler("profil_ekle", profil_ekle))
